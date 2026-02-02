@@ -1,6 +1,55 @@
 # Invoice Reconciliation Tool
 
-A command-line tool for reconciling armored vendor invoice PDFs against pickup CSV records by matching on location ID and month.
+A tool for reconciling armored vendor invoice PDFs against pickup CSV records.
+
+---
+
+## How to Open the Tool (Simple Instructions)
+
+### Step 1: Download the Tool
+
+1. Go to: https://github.com/wintana-ABTM/Cash-
+2. Click the green **"Code"** button
+3. Click **"Download ZIP"**
+4. Find the downloaded file (usually in your Downloads folder)
+5. **Right-click** the ZIP file and select **"Extract All"** (Windows) or double-click it (Mac)
+
+### Step 2: Install Python (if you don't have it)
+
+1. Go to: https://www.python.org/downloads/
+2. Click the big yellow **"Download Python"** button
+3. Run the installer
+4. **IMPORTANT (Windows):** Check the box that says **"Add Python to PATH"** before clicking Install
+
+### Step 3: Open the Tool
+
+**On Windows:**
+1. Open the extracted folder
+2. Find the file called **`start.bat`**
+3. **Double-click** `start.bat`
+4. A black window will appear - this is normal!
+5. Wait for it to say "Starting web server..."
+
+**On Mac:**
+1. Open the extracted folder
+2. Open **Terminal** (search for "Terminal" in Spotlight)
+3. Type `cd ` (with a space after it)
+4. Drag the extracted folder into Terminal and press Enter
+5. Type `./start.sh` and press Enter
+
+### Step 4: Use the Tool
+
+1. Open your web browser (Chrome, Safari, Edge, etc.)
+2. Type this in the address bar: **http://localhost:5000**
+3. Press Enter
+4. The Invoice Reconciliation Tool will appear!
+
+### To Close the Tool
+
+- Go back to the black window and press **Ctrl + C** on your keyboard
+- Or just close the black window
+
+---
 
 ## Features
 

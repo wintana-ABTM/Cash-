@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}Help - Invoice Reconciliation{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>How to Use This Tool</h2>
+
+    <h3 style="margin-top: 20px; color: #1a365d;">1. Prepare Your Files</h3>
+    <p style="margin: 10px 0;">You'll need two types of files:</p>
+    <ul style="margin-left: 20px; margin-bottom: 20px;">
+        <li><strong>Invoice PDFs</strong> - One or more invoice PDFs from your armored vendor (Loomis, Brinks, Garda, etc.)</li>
+        <li><strong>Pickup CSV</strong> - A CSV file with your pickup records</li>
+    </ul>
+
+    <h3 style="margin-top: 20px; color: #1a365d;">2. CSV Format Requirements</h3>
+    <p style="margin: 10px 0;">Your pickup CSV should contain at minimum:</p>
+    <ul style="margin-left: 20px; margin-bottom: 20px;">
+        <li><strong>Location ID</strong> - Column can be named: location_id, store_id, site_id, store #, etc.</li>
+        <li><strong>Pickup Date</strong> - Column can be named: pickup_date, date, service_date, etc.</li>
+    </ul>
+
+    <p style="margin: 10px 0;">Optional columns:</p>
+    <ul style="margin-left: 20px; margin-bottom: 20px;">
+        <li><strong>Amount</strong> - Expected pickup amount (amount, expected_amount, value, total)</li>
+        <li><strong>Location Name</strong> - Human-readable name (location_name, store_name)</li>
+        <li><strong>Pickup Type</strong> - Type of service (type, service_type, pickup_type)</li>
+        <li><strong>Reference Number</strong> - Confirmation/ticket number</li>
+    </ul>
+
+    <h4 style="margin-top: 16px;">Example CSV:</h4>
+    <pre style="background: #f1f5f9; padding: 16px; border-radius: 6px; overflow-x: auto; font-size: 0.875rem;">location_id,location_name,pickup_date,pickup_type,expected_amount,reference_number
+1001,Downtown Store,2024-01-05,Regular Pickup,1500.00,REF-001
+1001,Downtown Store,2024-01-12,Regular Pickup,1750.50,REF-002
+1002,Mall Location,2024-01-03,Regular Pickup,2200.00,REF-003
+1002,Mall Location,2024-01-10,Regular Pickup,1900.25,REF-004</pre>
+
+    <h3 style="margin-top: 20px; color: #1a365d;">3. Upload and Run</h3>
+    <ol style="margin-left: 20px; margin-bottom: 20px;">
+        <li>Go to the <a href="{{ url_for('index') }}">home page</a></li>
+        <li>Upload your invoice PDF(s)</li>
+        <li>Upload your pickup CSV</li>
+        <li>Optionally filter by specific location IDs or months</li>
+        <li>Click "Run Reconciliation"</li>
+    </ol>
+
+    <h3 style="margin-top: 20px; color: #1a365d;">4. Understanding Results</h3>
+    <p style="margin: 10px 0;">The tool compares invoices against pickups by <strong>location ID</strong> and <strong>month</strong>:</p>
+
+    <table style="margin: 16px 0;">
+        <thead>
+            <tr>
+                <th>Status</th>
+                <th>Meaning</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><span class="status-badge status-matched">Matched</span></td>
+                <td>Invoice count matches pickup count for that location-month</td>
+            </tr>
+            <tr>
+                <td><span class="status-badge status-over">Invoice Over</span></td>
+                <td>More invoice line items than pickup records (potential overbilling)</td>
+            </tr>
+            <tr>
+                <td><span class="status-badge status-under">Invoice Under</span></td>
+                <td>Fewer invoice line items than pickup records (potential underbilling)</td>
+            </tr>
+            <tr>
+                <td><span class="status-badge status-mismatch">Mismatch</span></td>
+                <td>General discrepancy detected</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h3 style="margin-top: 20px; color: #1a365d;">5. Download Results</h3>
+    <p style="margin: 10px 0;">After reconciliation, you can download:</p>
+    <ul style="margin-left: 20px; margin-bottom: 20px;">
+        <li><strong>Results CSV</strong> - Complete reconciliation results for all location-months</li>
+        <li><strong>Unmatched Items CSV</strong> - List of invoice items and pickups that couldn't be matched</li>
+    </ul>
+</div>
+
+<div class="card">
+    <h2>Supported Vendors</h2>
+    <p style="margin: 10px 0;">The tool auto-detects and parses invoices from:</p>
+    <ul style="margin-left: 20px;">
+        <li>Loomis</li>
+        <li>Brinks</li>
+        <li>Garda</li>
+        <li>Dunbar</li>
+        <li>Rochester Armored</li>
+        <li>Other vendors with standard invoice formats</li>
+    </ul>
+</div>
+
+<div class="card">
+    <h2>Troubleshooting</h2>
+
+    <h4 style="margin-top: 16px;">"Could not parse any invoices"</h4>
+    <p style="margin: 10px 0 20px;">The PDF format may not be recognized. Ensure the PDF contains selectable text (not scanned images). Try opening the PDF and copying text to verify.</p>
+
+    <h4>"Could not identify location ID column"</h4>
+    <p style="margin: 10px 0 20px;">Rename your CSV column to one of the recognized names: location_id, store_id, site_id, store #, etc.</p>
+
+    <h4>"No pickup records found"</h4>
+    <p style="margin: 10px 0 20px;">Check that your CSV has data rows below the header, and that dates are in a recognized format (YYYY-MM-DD, MM/DD/YYYY, etc.)</p>
+</div>
+
+<div style="text-align: center; margin-top: 30px;">
+    <a href="{{ url_for('index') }}" class="btn btn-primary">Start Reconciliation</a>
+</div>
+{% endblock %}

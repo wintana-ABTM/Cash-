@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+
+{% block title %}Reconciliation Results{% endblock %}
+
+{% block extra_css %}
+<style>
+    .actions-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+
+    .actions-bar .buttons {
+        display: flex;
+        gap: 10px;
+    }
+
+    .summary-highlight {
+        font-size: 1.25rem;
+        padding: 16px;
+        border-radius: 8px;
+        text-align: center;
+        margin-bottom: 20px;
+    }
+
+    .summary-highlight.success {
+        background-color: #c6f6d5;
+        color: #276749;
+    }
+
+    .summary-highlight.warning {
+        background-color: #fed7d7;
+        color: #c53030;
+    }
+
+    .table-container {
+        overflow-x: auto;
+    }
+
+    .amount {
+        font-family: 'Courier New', monospace;
+        text-align: right;
+    }
+
+    .filter-bar {
+        margin-bottom: 16px;
+        display: flex;
+        gap: 16px;
+        align-items: center;
+    }
+
+    .filter-bar label {
+        font-weight: 500;
+    }
+
+    .filter-bar select {
+        padding: 8px 12px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 0.875rem;
+    }
+
+    .parse-warnings {
+        background-color: #fefcbf;
+        border: 1px solid #f6e05e;
+        border-radius: 6px;
+        padding: 12px 16px;
+        margin-bottom: 20px;
+    }
+
+    .parse-warnings h4 {
+        color: #975a16;
+        margin-bottom: 8px;
+    }
+
+    .parse-warnings ul {
+        margin: 0;
+        padding-left: 20px;
+        color: #975a16;
+        font-size: 0.875rem;
+    }
+
+    .tab-container {
+        margin-top: 20px;
+    }
+
+    .tab-buttons {
+        display: flex;
+        border-bottom: 2px solid #e2e8f0;
+        margin-bottom: 16px;
+    }
+
+    .tab-btn {
+        padding: 12px 24px;
+        border: none;
+        background: none;
+        cursor: pointer;
+        font-size: 1rem;
+        color: #64748b;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -2px;
+        transition: all 0.2s;
+    }
+
+    .tab-btn:hover {
+        color: #1a365d;
+    }
+
+    .tab-btn.active {
+        color: #2563eb;
+        border-bottom-color: #2563eb;
+        font-weight: 600;
+    }
+
+    .tab-content {
+        display: none;
+    }
+
+    .tab-content.active {
+        display: block;
+    }
+
+    .no-discrepancies {
+        text-align: center;
+        padding: 40px;
+        color: #10b981;
+    }
+
+    .no-discrepancies .icon {
+        font-size: 3rem;
+        margin-bottom: 16px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="actions-bar">
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">&larr; New Reconciliation</a>
+    <div class="buttons">
+        <a href="{{ url_for('download', session_id=session_id, filename='reconciliation_results.csv') }}"
+           class="btn btn-success">Download Results CSV</a>
+        <a href="{{ url_for('download', session_id=session_id, filename='unmatched_items.csv') }}"
+           class="btn btn-secondary">Download Unmatched Items</a>
+    </div>
+</div>
+
+{% if parse_errors %}
+<div class="parse-warnings">
+    <h4>Some files could not be parsed:</h4>
+    <ul>
+        {% for error in parse_errors %}
+        <li>{{ error }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if summary.mismatched_count == 0 %}
+<div class="summary-highlight success">
+    All {{ summary.matched_count }} location-months reconciled successfully!
+</div>
+{% else %}
+<div class="summary-highlight warning">
+    {{ summary.mismatched_count }} discrepancies found out of {{ summary.results|length }} location-months
+</div>
+{% endif %}
+
+<div class="card">
+    <h2>Summary</h2>
+
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="value">{{ summary.total_locations }}</div>
+            <div class="label">Locations</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ summary.total_months }}</div>
+            <div class="label">Months</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ summary.matched_count }}</div>
+            <div class="label">Matched</div>
+        </div>
+        <div class="stat-card">
+            <div class="value {% if summary.mismatched_count > 0 %}negative{% endif %}">
+                {{ summary.mismatched_count }}
+            </div>
+            <div class="label">Discrepancies</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ "%.1f"|format(summary.match_rate) }}%</div>
+            <div class="label">Match Rate</div>
+        </div>
+    </div>
+
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="value">{{ summary.total_invoice_amount|currency }}</div>
+            <div class="label">Total Invoice Amount</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">{{ summary.total_pickup_amount|currency }}</div>
+            <div class="label">Total Pickup Amount</div>
+        </div>
+        <div class="stat-card">
+            <div class="value {% if summary.total_difference and summary.total_difference > 0 %}negative{% elif summary.total_difference and summary.total_difference < 0 %}positive{% endif %}">
+                {{ summary.total_difference|diff }}
+            </div>
+            <div class="label">Difference</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Details</h2>
+
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button class="tab-btn active" data-tab="discrepancies">
+                Discrepancies ({{ summary.mismatched_count }})
+            </button>
+            <button class="tab-btn" data-tab="all">
+                All Results ({{ summary.results|length }})
+            </button>
+            <button class="tab-btn" data-tab="invoices">
+                Parsed Invoices ({{ invoices|length }})
+            </button>
+        </div>
+
+        <div class="tab-content active" id="tab-discrepancies">
+            {% set discrepancies = summary.results|selectattr('is_reconciled', 'equalto', false)|list %}
+            {% if discrepancies %}
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Month</th>
+                            <th>Invoice Count</th>
+                            <th>Pickup Count</th>
+                            <th>Count Diff</th>
+                            <th>Invoice Amount</th>
+                            <th>Pickup Amount</th>
+                            <th>Amount Diff</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for result in discrepancies %}
+                        <tr>
+                            <td>{{ result.location_id }}</td>
+                            <td>{{ result.month }}</td>
+                            <td>{{ result.invoice_count }}</td>
+                            <td>{{ result.pickup_count }}</td>
+                            <td class="{% if result.difference_count > 0 %}negative{% elif result.difference_count < 0 %}positive{% endif %}">
+                                {{ result.difference_count|diff }}
+                            </td>
+                            <td class="amount">{{ result.invoice_total|currency }}</td>
+                            <td class="amount">{{ result.pickup_total|currency }}</td>
+                            <td class="amount {% if result.difference_amount and result.difference_amount > 0 %}negative{% elif result.difference_amount and result.difference_amount < 0 %}positive{% endif %}">
+                                {{ result.difference_amount|diff }}
+                            </td>
+                            <td>
+                                {% if result.status == 'MATCHED' %}
+                                <span class="status-badge status-matched">Matched</span>
+                                {% elif result.status == 'INVOICE_OVER' %}
+                                <span class="status-badge status-over">Invoice Over</span>
+                                {% elif result.status == 'INVOICE_UNDER' %}
+                                <span class="status-badge status-under">Invoice Under</span>
+                                {% else %}
+                                <span class="status-badge status-mismatch">Mismatch</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div class="no-discrepancies">
+                <div class="icon">✓</div>
+                <p>No discrepancies found!</p>
+            </div>
+            {% endif %}
+        </div>
+
+        <div class="tab-content" id="tab-all">
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Location</th>
+                            <th>Month</th>
+                            <th>Invoice Count</th>
+                            <th>Pickup Count</th>
+                            <th>Count Diff</th>
+                            <th>Invoice Amount</th>
+                            <th>Pickup Amount</th>
+                            <th>Amount Diff</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for result in summary.results %}
+                        <tr>
+                            <td>{{ result.location_id }}</td>
+                            <td>{{ result.month }}</td>
+                            <td>{{ result.invoice_count }}</td>
+                            <td>{{ result.pickup_count }}</td>
+                            <td class="{% if result.difference_count > 0 %}negative{% elif result.difference_count < 0 %}positive{% endif %}">
+                                {{ result.difference_count|diff }}
+                            </td>
+                            <td class="amount">{{ result.invoice_total|currency }}</td>
+                            <td class="amount">{{ result.pickup_total|currency }}</td>
+                            <td class="amount {% if result.difference_amount and result.difference_amount > 0 %}negative{% elif result.difference_amount and result.difference_amount < 0 %}positive{% endif %}">
+                                {{ result.difference_amount|diff }}
+                            </td>
+                            <td>
+                                {% if result.status == 'MATCHED' %}
+                                <span class="status-badge status-matched">Matched</span>
+                                {% elif result.status == 'INVOICE_OVER' %}
+                                <span class="status-badge status-over">Invoice Over</span>
+                                {% elif result.status == 'INVOICE_UNDER' %}
+                                <span class="status-badge status-under">Invoice Under</span>
+                                {% else %}
+                                <span class="status-badge status-mismatch">Mismatch</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="tab-content" id="tab-invoices">
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Invoice #</th>
+                            <th>Vendor</th>
+                            <th>Date</th>
+                            <th>Line Items</th>
+                            <th>Total Amount</th>
+                            <th>Source File</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for invoice in invoices %}
+                        <tr>
+                            <td>{{ invoice.invoice_number }}</td>
+                            <td>{{ invoice.vendor_name }}</td>
+                            <td>{{ invoice.invoice_date }}</td>
+                            <td>{{ invoice.line_items|length }}</td>
+                            <td class="amount">{{ invoice.total_amount|currency }}</td>
+                            <td>{{ invoice.source_file|basename if invoice.source_file else 'N/A' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            // Remove active from all
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+
+            // Add active to clicked
+            btn.classList.add('active');
+            const tabId = 'tab-' + btn.dataset.tab;
+            document.getElementById(tabId).classList.add('active');
+        });
+    });
+</script>
+{% endblock %}

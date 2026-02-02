@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}Upload Files - Invoice Reconciliation{% endblock %}
+
+{% block extra_css %}
+<style>
+    .upload-form {
+        max-width: 600px;
+        margin: 0 auto;
+    }
+
+    .form-group {
+        margin-bottom: 20px;
+    }
+
+    .form-group label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 8px;
+        color: #374151;
+    }
+
+    .form-group .hint {
+        font-size: 0.875rem;
+        color: #6b7280;
+        margin-top: 4px;
+    }
+
+    .file-input-wrapper {
+        position: relative;
+        border: 2px dashed #cbd5e1;
+        border-radius: 8px;
+        padding: 40px 20px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        background: #f8fafc;
+    }
+
+    .file-input-wrapper:hover {
+        border-color: #2563eb;
+        background: #eff6ff;
+    }
+
+    .file-input-wrapper.dragover {
+        border-color: #2563eb;
+        background: #dbeafe;
+    }
+
+    .file-input-wrapper input[type="file"] {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0;
+        cursor: pointer;
+    }
+
+    .file-input-wrapper .icon {
+        font-size: 2rem;
+        margin-bottom: 8px;
+    }
+
+    .file-input-wrapper .text {
+        color: #475569;
+    }
+
+    .file-input-wrapper .selected-files {
+        margin-top: 12px;
+        font-size: 0.875rem;
+        color: #2563eb;
+    }
+
+    .text-input {
+        width: 100%;
+        padding: 10px 14px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-size: 1rem;
+    }
+
+    .text-input:focus {
+        outline: none;
+        border-color: #2563eb;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+
+    .form-actions {
+        margin-top: 30px;
+        text-align: center;
+    }
+
+    .form-actions .btn {
+        min-width: 200px;
+    }
+
+    .optional-section {
+        border-top: 1px solid #e5e7eb;
+        margin-top: 24px;
+        padding-top: 24px;
+    }
+
+    .optional-section h3 {
+        font-size: 1rem;
+        color: #6b7280;
+        margin-bottom: 16px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="card upload-form">
+    <h2>Upload Files for Reconciliation</h2>
+
+    <form action="{{ url_for('reconcile') }}" method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label for="invoices">Invoice PDFs</label>
+            <div class="file-input-wrapper" id="invoice-drop">
+                <div class="icon">📄</div>
+                <div class="text">Drop invoice PDF files here or click to browse</div>
+                <div class="selected-files" id="invoice-files"></div>
+                <input type="file" name="invoices" id="invoices" accept=".pdf" multiple required>
+            </div>
+            <div class="hint">Upload one or more invoice PDFs from your armored vendor</div>
+        </div>
+
+        <div class="form-group">
+            <label for="pickups">Pickup CSV</label>
+            <div class="file-input-wrapper" id="pickup-drop">
+                <div class="icon">📊</div>
+                <div class="text">Drop pickup CSV file here or click to browse</div>
+                <div class="selected-files" id="pickup-file"></div>
+                <input type="file" name="pickups" id="pickups" accept=".csv" required>
+            </div>
+            <div class="hint">CSV file with pickup records (must include location ID and date columns)</div>
+        </div>
+
+        <div class="optional-section">
+            <h3>Optional Filters</h3>
+
+            <div class="form-group">
+                <label for="locations">Filter by Location IDs</label>
+                <input type="text" name="locations" id="locations" class="text-input"
+                       placeholder="e.g., 1001, 1002, 1003">
+                <div class="hint">Comma-separated list of location IDs (leave blank for all)</div>
+            </div>
+
+            <div class="form-group">
+                <label for="months">Filter by Months</label>
+                <input type="text" name="months" id="months" class="text-input"
+                       placeholder="e.g., 2024-01, 2024-02">
+                <div class="hint">Comma-separated months in YYYY-MM format (leave blank for all)</div>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Run Reconciliation</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // File input display
+    function updateFileDisplay(input, displayId) {
+        const display = document.getElementById(displayId);
+        if (input.files.length > 0) {
+            const names = Array.from(input.files).map(f => f.name).join(', ');
+            display.textContent = `Selected: ${names}`;
+        } else {
+            display.textContent = '';
+        }
+    }
+
+    document.getElementById('invoices').addEventListener('change', function() {
+        updateFileDisplay(this, 'invoice-files');
+    });
+
+    document.getElementById('pickups').addEventListener('change', function() {
+        updateFileDisplay(this, 'pickup-file');
+    });
+
+    // Drag and drop styling
+    ['invoice-drop', 'pickup-drop'].forEach(id => {
+        const el = document.getElementById(id);
+
+        el.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            el.classList.add('dragover');
+        });
+
+        el.addEventListener('dragleave', () => {
+            el.classList.remove('dragover');
+        });
+
+        el.addEventListener('drop', () => {
+            el.classList.remove('dragover');
+        });
+    });
+</script>
+{% endblock %}

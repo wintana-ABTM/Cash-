@@ -1,0 +1,20 @@
+location_id,location_name,pickup_date,pickup_type,expected_amount,reference_number
+1001,Downtown Store,2024-01-05,Regular Pickup,1500.00,REF-001
+1001,Downtown Store,2024-01-12,Regular Pickup,1750.50,REF-002
+1001,Downtown Store,2024-01-19,Regular Pickup,1600.00,REF-003
+1001,Downtown Store,2024-01-26,Regular Pickup,1425.75,REF-004
+1002,Mall Location,2024-01-03,Regular Pickup,2200.00,REF-005
+1002,Mall Location,2024-01-10,Regular Pickup,2450.00,REF-006
+1002,Mall Location,2024-01-17,Regular Pickup,2100.50,REF-007
+1002,Mall Location,2024-01-24,Regular Pickup,2300.00,REF-008
+1002,Mall Location,2024-01-31,Regular Pickup,2550.00,REF-009
+1003,Airport Kiosk,2024-01-08,Regular Pickup,800.00,REF-010
+1003,Airport Kiosk,2024-01-22,Regular Pickup,950.00,REF-011
+1001,Downtown Store,2024-02-02,Regular Pickup,1600.00,REF-012
+1001,Downtown Store,2024-02-09,Regular Pickup,1550.25,REF-013
+1001,Downtown Store,2024-02-16,Regular Pickup,1700.00,REF-014
+1001,Downtown Store,2024-02-23,Regular Pickup,1625.50,REF-015
+1002,Mall Location,2024-02-07,Regular Pickup,2350.00,REF-016
+1002,Mall Location,2024-02-14,Regular Pickup,2500.00,REF-017
+1002,Mall Location,2024-02-21,Regular Pickup,2200.00,REF-018
+1002,Mall Location,2024-02-28,Regular Pickup,2425.00,REF-019

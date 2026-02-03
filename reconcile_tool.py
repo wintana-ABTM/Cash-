@@ -426,10 +426,168 @@ def run_streamlit_app():
             st.write(f"**Fuel Surcharge:** {fuel_rate*100:.1f}%")
 
     # Mode selection
-    mode = st.sidebar.radio("Mode", ["Monthly Estimation", "Compare Vendors"])
+    mode = st.sidebar.radio("Mode", ["Monthly Estimation", "Invoice Reconciliation", "Compare Vendors"])
 
     # Main content
-    if mode == "Monthly Estimation":
+    if mode == "Invoice Reconciliation":
+        st.header("Invoice Reconciliation")
+        st.markdown("Upload an invoice PDF to extract and analyze charges.")
+
+        # Month selection
+        col1, col2 = st.columns(2)
+        with col1:
+            month = st.selectbox(
+                "Service Month",
+                range(1, 13),
+                index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+                format_func=lambda x: datetime(2000, x, 1).strftime("%B"),
+                key="recon_month"
+            )
+        with col2:
+            year = st.selectbox("Year", range(2024, 2027), index=1, key="recon_year")
+
+        service_month = f"{datetime(year, month, 1).strftime('%B')} {year}"
+
+        # PDF Upload
+        st.subheader("Upload Invoice PDF")
+        pdf_file = st.file_uploader(
+            "Upload Invoice PDF",
+            type=["pdf"],
+            help="Upload the vendor invoice PDF file"
+        )
+
+        if pdf_file:
+            st.success(f"Uploaded: {pdf_file.name}")
+
+            # Try to parse the PDF
+            try:
+                import pdfplumber
+            except ImportError:
+                st.warning("Installing pdfplumber...")
+                os.system(f"{sys.executable} -m pip install pdfplumber")
+                import pdfplumber
+
+            # Save uploaded file temporarily
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(pdf_file.read())
+                tmp_path = tmp.name
+
+            try:
+                with pdfplumber.open(tmp_path) as pdf:
+                    st.subheader("Invoice Contents")
+
+                    full_text = ""
+                    for i, page in enumerate(pdf.pages):
+                        text = page.extract_text() or ""
+                        full_text += text + "\n"
+
+                        # Show tables if found
+                        tables = page.extract_tables()
+                        if tables:
+                            for j, table in enumerate(tables):
+                                if table and len(table) > 1:
+                                    st.write(f"**Table {j+1} (Page {i+1}):**")
+                                    try:
+                                        table_df = pd.DataFrame(table[1:], columns=table[0] if table[0] else None)
+                                        st.dataframe(table_df, use_container_width=True)
+                                    except:
+                                        st.dataframe(pd.DataFrame(table), use_container_width=True)
+
+                    # Show extracted text
+                    with st.expander("Raw Text from PDF"):
+                        st.text(full_text[:5000] + "..." if len(full_text) > 5000 else full_text)
+
+                    # Extract key info
+                    st.subheader("Extracted Information")
+
+                    # Try to find invoice number
+                    import re
+                    inv_match = re.search(r'(?:Invoice|INV)[#:\s]*(\d+)', full_text, re.IGNORECASE)
+                    if inv_match:
+                        st.write(f"**Invoice Number:** {inv_match.group(1)}")
+
+                    # Try to find total
+                    total_matches = re.findall(r'(?:Total|Amount Due|Grand Total)[:\s]*\$?([\d,]+\.?\d*)', full_text, re.IGNORECASE)
+                    if total_matches:
+                        st.write(f"**Total Amount:** ${total_matches[-1]}")
+
+                    # Try to find dates
+                    date_matches = re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}', full_text)
+                    if date_matches:
+                        st.write(f"**Dates Found:** {', '.join(date_matches[:5])}")
+
+                    # Show pickup tracking upload for comparison
+                    st.subheader("Compare with Tracking Data (Optional)")
+                    tracking_file = st.file_uploader(
+                        "Upload Tracking Excel/CSV",
+                        type=["xlsx", "xls", "csv"],
+                        key="recon_tracking"
+                    )
+
+                    if tracking_file:
+                        try:
+                            if tracking_file.name.endswith('.csv'):
+                                tracking_df = pd.read_csv(tracking_file)
+                            else:
+                                excel = pd.ExcelFile(tracking_file)
+                                sheet_name = None
+                                for s in excel.sheet_names:
+                                    if 'pickup' in s.lower() or 'recon' in s.lower():
+                                        sheet_name = s
+                                        break
+                                tracking_df = pd.read_excel(tracking_file, sheet_name=sheet_name or 0)
+
+                            st.success(f"Loaded {len(tracking_df)} tracking records")
+
+                            if st.button("Compare Invoice to Tracking", type="primary"):
+                                # Generate estimation from tracking
+                                result = estimate_monthly_charges(tracking_df, vendor_name, service_month)
+
+                                st.subheader("Comparison Results")
+
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.write("**From Tracking Data (Expected):**")
+                                    st.metric("Total Pickups", result.total_pickups)
+                                    st.metric("Expected Total", f"${result.total_estimated:,.2f}")
+
+                                with col2:
+                                    st.write("**From Invoice:**")
+                                    if total_matches:
+                                        invoice_total = float(total_matches[-1].replace(",", ""))
+                                        st.metric("Invoice Total", f"${invoice_total:,.2f}")
+                                        variance = invoice_total - result.total_estimated
+                                        st.metric("Variance", f"${variance:,.2f}",
+                                                delta=f"${variance:,.2f}",
+                                                delta_color="inverse" if variance > 0 else "normal")
+                                    else:
+                                        st.write("Could not extract total from invoice")
+
+                                # Show breakdown
+                                st.subheader("Expected Charges by Location")
+                                loc_data = []
+                                for loc, est in result.location_estimates.items():
+                                    loc_data.append({
+                                        "Location": loc,
+                                        "Pickups": est.pickup_count,
+                                        "Subtotal": f"${est.subtotal:,.2f}"
+                                    })
+                                st.dataframe(pd.DataFrame(loc_data), use_container_width=True)
+
+                        except Exception as e:
+                            st.error(f"Error loading tracking file: {str(e)}")
+
+            except Exception as e:
+                st.error(f"Error reading PDF: {str(e)}")
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(tmp_path)
+                except:
+                    pass
+
+    elif mode == "Monthly Estimation":
         st.header("Monthly Charge Estimation")
 
         # Month selection

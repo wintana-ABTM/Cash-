@@ -185,28 +185,32 @@ def detect_columns(df: pd.DataFrame) -> Dict[str, str]:
 
     # Date column
     for col in df.columns:
-        col_lower = col.lower().replace("_", " ")
+        col_str = str(col) if col is not None else ""
+        col_lower = col_str.lower().replace("_", " ")
         if any(x in col_lower for x in ["pickup date", "date", "service date"]):
             columns["date"] = col
             break
 
     # Location column
     for col in df.columns:
-        col_lower = col.lower().replace("_", " ")
+        col_str = str(col) if col is not None else ""
+        col_lower = col_str.lower().replace("_", " ")
         if any(x in col_lower for x in ["location", "branch", "store", "site"]):
             columns["location"] = col
             break
 
     # Service type column
     for col in df.columns:
-        col_lower = col.lower().replace("_", " ")
+        col_str = str(col) if col is not None else ""
+        col_lower = col_str.lower().replace("_", " ")
         if any(x in col_lower for x in ["type", "service"]):
             columns["service_type"] = col
             break
 
     # Vendor column
     for col in df.columns:
-        col_lower = col.lower().replace("_", " ")
+        col_str = str(col) if col is not None else ""
+        col_lower = col_str.lower().replace("_", " ")
         if any(x in col_lower for x in ["vendor", "carrier", "provider"]):
             columns["vendor"] = col
             break

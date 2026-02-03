@@ -1,0 +1,235 @@
+{
+  "vendors": {
+    "Cash Man Services": {
+      "vendor_id": "cashman",
+      "pricing_model": "per_service",
+      "rates": {
+        "smartsafe_pickup": 46.57,
+        "vault_management": 9.22,
+        "branch_delivery": 25.70,
+        "onetime_pickup": 125.00
+      },
+      "fuel_surcharge": {
+        "enabled": true,
+        "type": "percentage_variable",
+        "base_fuel_price": 2.50,
+        "current_fuel_price": 3.20,
+        "rate_per_10_cents": 0.02,
+        "applies_to": ["smartsafe_pickup", "vault_management", "branch_delivery"]
+      },
+      "billing_components": [
+        {
+          "name": "Secure Transportation: Smartsafe Pickups",
+          "rate_key": "smartsafe_pickup",
+          "per": "pickup"
+        },
+        {
+          "name": "Vault & Cash Management",
+          "rate_key": "vault_management",
+          "per": "pickup"
+        },
+        {
+          "name": "Secure Transportation: Branch Deliveries",
+          "rate_key": "branch_delivery",
+          "per": "delivery"
+        },
+        {
+          "name": "Fuel Surcharge",
+          "rate_key": "fuel_surcharge",
+          "calculated": true
+        }
+      ],
+      "location_tracking_field": "Armored Transport Branch",
+      "location_mapping": {
+        "Game Haven - Sandy - EOW": ["Game Haven Sandy", "Sandy"],
+        "Game Haven - West Jordan - Monthly": ["Game Haven West Jordan", "West Jordan"],
+        "Game Haven - Bountiful - On Request": ["Game Haven Bountiful", "Bountiful"],
+        "Koodegras CBD - Midvale - Monthly": ["Koodegras Midvale", "Midvale"],
+        "Newgate Mall": ["Newgate"],
+        "Kwick Stop Odgen": ["Kwick Stop", "Ogden"]
+      },
+      "invoice_patterns": {
+        "invoice_number": "INVOICE\\s+(\\d+)",
+        "date_format": "MM/DD/YYYY",
+        "line_item_identifier": "QTY\\s+RATE\\s+AMOUNT"
+      }
+    },
+    "Loomis": {
+      "vendor_id": "loomis",
+      "pricing_model": "per_service",
+      "rates": {
+        "pickup": 35.00,
+        "emergency_pickup": 75.00
+      },
+      "fuel_surcharge": {
+        "enabled": true,
+        "type": "percentage_fixed",
+        "rate": 0.10,
+        "applies_to": ["pickup", "emergency_pickup"]
+      },
+      "billing_components": [
+        {
+          "name": "Armored Car Service",
+          "rate_key": "pickup",
+          "per": "pickup"
+        },
+        {
+          "name": "Emergency Pickup",
+          "rate_key": "emergency_pickup",
+          "per": "pickup"
+        },
+        {
+          "name": "Fuel Surcharge",
+          "rate_key": "fuel_surcharge",
+          "calculated": true
+        }
+      ],
+      "location_tracking_field": "Armored Transport Branch",
+      "location_mapping": {},
+      "invoice_patterns": {
+        "invoice_number": "Invoice\\s*#?:?\\s*(\\d+)",
+        "date_format": "MM/DD/YYYY",
+        "line_item_identifier": "Description.*Amount"
+      },
+      "deposit_turnaround_days": 3
+    },
+    "Sectran": {
+      "vendor_id": "sectran",
+      "pricing_model": "per_service",
+      "rates": {
+        "pickup": 42.00
+      },
+      "fuel_surcharge": {
+        "enabled": false
+      },
+      "billing_components": [
+        {
+          "name": "Cash Pickup",
+          "rate_key": "pickup",
+          "per": "pickup"
+        }
+      ],
+      "location_tracking_field": "Armored Transport Branch",
+      "location_mapping": {},
+      "invoice_patterns": {
+        "invoice_number": "Invoice\\s*:?\\s*(\\d+)",
+        "date_format": "MM/DD/YYYY",
+        "line_item_identifier": "Service.*Amount"
+      },
+      "deposit_turnaround_days": 7
+    },
+    "Brinks": {
+      "vendor_id": "brinks",
+      "pricing_model": "per_service",
+      "rates": {
+        "pickup": 38.50,
+        "smart_safe": 45.00,
+        "change_order": 15.00
+      },
+      "fuel_surcharge": {
+        "enabled": true,
+        "type": "percentage_fixed",
+        "rate": 0.12,
+        "applies_to": ["pickup", "smart_safe"]
+      },
+      "billing_components": [
+        {
+          "name": "Regular Pickup",
+          "rate_key": "pickup",
+          "per": "pickup"
+        },
+        {
+          "name": "Smart Safe Service",
+          "rate_key": "smart_safe",
+          "per": "pickup"
+        },
+        {
+          "name": "Change Order",
+          "rate_key": "change_order",
+          "per": "order"
+        },
+        {
+          "name": "Fuel Surcharge",
+          "rate_key": "fuel_surcharge",
+          "calculated": true
+        }
+      ],
+      "location_tracking_field": "Armored Transport Branch",
+      "location_mapping": {},
+      "invoice_patterns": {
+        "invoice_number": "Invoice\\s*Number:?\\s*(\\d+)",
+        "date_format": "MM/DD/YYYY",
+        "line_item_identifier": "Qty.*Rate.*Amount"
+      },
+      "deposit_turnaround_days": 2
+    },
+    "Garda": {
+      "vendor_id": "garda",
+      "pricing_model": "per_service",
+      "rates": {
+        "pickup": 40.00,
+        "vault_processing": 8.50
+      },
+      "fuel_surcharge": {
+        "enabled": true,
+        "type": "percentage_fixed",
+        "rate": 0.08,
+        "applies_to": ["pickup"]
+      },
+      "billing_components": [
+        {
+          "name": "Armored Transport",
+          "rate_key": "pickup",
+          "per": "pickup"
+        },
+        {
+          "name": "Vault Processing",
+          "rate_key": "vault_processing",
+          "per": "pickup"
+        },
+        {
+          "name": "Fuel Surcharge",
+          "rate_key": "fuel_surcharge",
+          "calculated": true
+        }
+      ],
+      "location_tracking_field": "Armored Transport Branch",
+      "location_mapping": {},
+      "invoice_patterns": {
+        "invoice_number": "INV[\\s-]*(\\d+)",
+        "date_format": "MM/DD/YYYY",
+        "line_item_identifier": "Description.*Total"
+      },
+      "deposit_turnaround_days": 3
+    }
+  },
+  "schedules": {
+    "EOW": {
+      "description": "Every Other Week",
+      "frequency_days": 14,
+      "expected_monthly_pickups": 2
+    },
+    "Weekly": {
+      "description": "Weekly",
+      "frequency_days": 7,
+      "expected_monthly_pickups": 4
+    },
+    "Monthly": {
+      "description": "Monthly",
+      "frequency_days": 30,
+      "expected_monthly_pickups": 1
+    },
+    "On Request": {
+      "description": "As Needed",
+      "frequency_days": null,
+      "expected_monthly_pickups": null
+    }
+  },
+  "service_types": {
+    "smartsafe_pickup": ["Smartsafe", "Smart Safe", "Smart-Safe", "SS Pickup"],
+    "regular_pickup": ["Regular Pickup", "Pickup", "Cash Pickup", "Standard Pickup"],
+    "branch_delivery": ["Branch Delivery", "Delivery", "Change Delivery"],
+    "vault_management": ["Vault", "Vault Management", "Vault Processing", "Cash Management"],
+    "onetime_pickup": ["One-Time", "One Time", "Special Pickup", "Emergency"]
+  }
+}

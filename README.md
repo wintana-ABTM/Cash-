@@ -1,14 +1,33 @@
-# Invoice Reconciliation Tool
+# Invoice Reconciliation & Estimation System
 
-A command-line tool for reconciling armored vendor invoice PDFs against pickup CSV records by matching on location ID and month.
+A dual-purpose tool for managing armored vendor pickup charges:
+1. **Real-time Monthly Estimation** - Estimate expected charges as pickups occur throughout the month
+2. **Invoice Reconciliation** - Compare actual invoices against tracked pickups using vendor-specific pricing rules
 
 ## Features
 
-- **PDF Invoice Parsing**: Automatically extracts line items from armored vendor invoices (supports Loomis, Brinks, Garda, and other major carriers)
-- **CSV Pickup Parsing**: Flexible CSV parsing with auto-detection of common column formats
-- **Reconciliation Engine**: Matches invoices to pickups by location ID and month
-- **Multiple Report Types**: Summary, detail, and discrepancy-focused reports
-- **CSV Export**: Export results and unmatched items to CSV for further analysis
+### Vendor-Aware Pricing
+- **Multiple Vendor Support**: Cash Man Services, Loomis, Sectran, Brinks, Garda
+- **Configurable Rates**: Per-service pricing with customizable rate structures
+- **Fuel Surcharge Handling**: Support for both fixed and variable fuel surcharge calculations
+- **Location Mapping**: Flexible matching between invoice and tracking location names
+
+### Monthly Estimation
+- **Real-time Calculations**: Track expected charges as the month progresses
+- **Location Breakdown**: See charges by location with schedule detection (EOW, Weekly, Monthly)
+- **Month-End Projection**: Estimate remaining pickups based on historical patterns
+- **Alerts & Notes**: Automatic detection of unusual patterns or missing pickups
+
+### Invoice Reconciliation
+- **PDF Parsing**: Extract line items from vendor invoice PDFs
+- **Vendor-Specific Validation**: Verify rates against contracted prices
+- **Line-by-Line Comparison**: Compare every charge against expectations
+- **Discrepancy Detection**: Identify and categorize mismatches with recommended actions
+
+### Pattern Analysis
+- **Schedule Detection**: Automatically identify pickup schedules from historical data
+- **Anomaly Alerts**: Flag missing pickups, excess charges, or unusual patterns
+- **Trend Analysis**: Track changes in pickup frequency over time
 
 ## Installation
 
@@ -22,205 +41,362 @@ pip install -e .
 
 ## Quick Start
 
-### Basic Reconciliation
+### Option 1: Streamlit Web Dashboard
 
 ```bash
-# Reconcile a directory of invoice PDFs against a pickup CSV
-invoice-reconcile reconcile ./invoices/ ./pickups.csv
-
-# Reconcile a single invoice PDF
-invoice-reconcile reconcile ./invoice.pdf ./pickups.csv
+streamlit run invoice_reconciliation/streamlit_app.py
 ```
 
-### Filter by Location or Month
+Open http://localhost:8501 in your browser.
+
+### Option 2: Command Line Interface
 
 ```bash
-# Filter to specific locations
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -l 1001 -l 1002
+# Monthly estimation
+invoice-recon estimate tracking.xlsx -v "Cash Man Services" -m "October 2025"
 
-# Filter to specific months
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -m 2024-01 -m 2024-02
+# Invoice reconciliation
+invoice-recon reconcile invoice.pdf tracking.xlsx -v "Cash Man Services"
+
+# Interactive mode
+invoice-recon interactive
 ```
 
-### Generate Reports
+### Option 3: Python API
+
+```python
+from invoice_reconciliation import (
+    get_vendor_manager,
+    EstimationEngine,
+    VendorReconciler
+)
+import pandas as pd
+
+# Load vendor configuration
+vendor_manager = get_vendor_manager()
+vendor = vendor_manager.get_vendor("Cash Man Services")
+
+# Load tracking data
+tracking_data = pd.read_excel("tracking.xlsx")
+
+# Generate estimation
+engine = EstimationEngine(vendor)
+result = engine.estimate_monthly_charges(tracking_data, "October 2025")
+
+print(f"Total Estimated: ${result.total_estimated:,.2f}")
+print(f"Total Pickups: {result.total_pickups}")
+```
+
+## Vendor Configuration
+
+Vendor pricing is configured in `invoice_reconciliation/vendors.json`:
+
+```json
+{
+  "vendors": {
+    "Cash Man Services": {
+      "vendor_id": "cashman",
+      "pricing_model": "per_service",
+      "rates": {
+        "smartsafe_pickup": 46.57,
+        "vault_management": 9.22,
+        "branch_delivery": 25.70,
+        "onetime_pickup": 125.00
+      },
+      "fuel_surcharge": {
+        "enabled": true,
+        "type": "percentage_variable",
+        "base_fuel_price": 2.50,
+        "current_fuel_price": 3.20,
+        "rate_per_10_cents": 0.02
+      }
+    }
+  }
+}
+```
+
+### Updating Vendor Rates
 
 ```bash
-# Summary report (default)
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -r summary
+# Update fuel price
+invoice-recon update-vendor "Cash Man Services" --fuel-price 3.50
 
-# Detailed report with all location-months
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -r detail
-
-# Discrepancy-only report
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -r discrepancy
+# Update service rate
+invoice-recon update-vendor "Cash Man Services" --rate smartsafe_pickup 48.00
 ```
 
-### Export Results
+## CLI Commands
+
+### `estimate` - Monthly Charge Estimation
 
 ```bash
-# Export to CSV
-invoice-reconcile reconcile ./invoices/ ./pickups.csv -o results.csv
-
-# Export unmatched items
-invoice-reconcile reconcile ./invoices/ ./pickups.csv --export-unmatched unmatched.csv
-```
-
-## Commands
-
-### `reconcile`
-
-Main command for reconciling invoices against pickups.
-
-```bash
-invoice-reconcile reconcile INVOICE_PATH PICKUP_CSV [OPTIONS]
-```
+invoice-recon estimate TRACKING_FILE -v VENDOR -m MONTH [OPTIONS]
 
 Options:
-- `-v, --vendor TEXT`: Vendor name (auto-detected if not specified)
-- `-l, --location TEXT`: Filter to specific location ID(s) (can be repeated)
-- `-m, --month TEXT`: Filter to specific month(s) in YYYY-MM format (can be repeated)
-- `-o, --output PATH`: Output CSV file for results
-- `-r, --report [summary|detail|discrepancy]`: Report type (default: summary)
-- `--match-by-date`: Match by exact date instead of just month
-- `--export-unmatched PATH`: Export unmatched items to separate CSV
-- `-q, --quiet`: Only show summary line
+  -v, --vendor TEXT    Vendor name (required)
+  -m, --month TEXT     Service month, e.g., "October 2025" or "2025-10" (required)
+  --as-of DATE         Calculate as-of specific date (default: today)
+  -o, --output PATH    Export results to Excel file
+  -q, --quiet          Only show summary line
+```
 
-### `parse-invoice`
+**Example:**
+```bash
+invoice-recon estimate tracking.xlsx -v "Cash Man Services" -m "October 2025" -o estimate.xlsx
+```
 
-Test PDF parsing for a single invoice.
+### `reconcile` - Invoice Reconciliation
 
 ```bash
-invoice-reconcile parse-invoice PDF_PATH [OPTIONS]
-```
+invoice-recon reconcile INVOICE_PDF TRACKING_FILE -v VENDOR [OPTIONS]
 
 Options:
-- `-v, --vendor TEXT`: Vendor name
+  -v, --vendor TEXT    Vendor name (required)
+  -m, --month TEXT     Override service month (optional)
+  -o, --output PATH    Export results to Excel file
+  -q, --quiet          Only show summary line
+```
 
-### `parse-csv`
+**Example:**
+```bash
+invoice-recon reconcile invoice_16815.pdf tracking.xlsx -v "Cash Man Services"
+```
 
-Test CSV parsing for pickup records.
+### `interactive` - Interactive Mode
 
 ```bash
-invoice-reconcile parse-csv CSV_PATH [OPTIONS]
+invoice-recon interactive
 ```
+
+Guides you through vendor selection and provides menu options for:
+1. Monthly Estimation
+2. Invoice Reconciliation
+3. Vendor Comparison
+
+### `list-vendors` - Show Configured Vendors
+
+```bash
+invoice-recon list-vendors
+```
+
+### `analyze` - Analyze Tracking Data
+
+```bash
+invoice-recon analyze TRACKING_FILE [OPTIONS]
 
 Options:
-- `--location-col TEXT`: Column name for location ID
-- `--date-col TEXT`: Column name for pickup date
-- `--date-format TEXT`: Date format string (e.g., '%Y-%m-%d')
-
-### `check-location`
-
-Check reconciliation for a specific location and month.
-
-```bash
-invoice-reconcile check-location INVOICE_PATH PICKUP_CSV LOCATION_ID MONTH
+  -v, --vendor TEXT    Filter by vendor
+  -m, --month TEXT     Filter by month
+  --show-dates         Show pickup dates
 ```
 
-## CSV Format
+## Tracking Data Format
 
-The pickup CSV should contain these columns (column names are auto-detected):
+Your tracking Excel/CSV should contain these columns:
 
 | Column | Required | Description |
 |--------|----------|-------------|
-| location_id | Yes | Store/location identifier |
-| pickup_date | Yes | Date of pickup (various formats supported) |
-| location_name | No | Human-readable location name |
-| pickup_type | No | Type of pickup service |
-| amount | No | Expected pickup amount |
-| reference | No | Reference/confirmation number |
+| `pickup_date` or `date` | Yes | Date of pickup |
+| `location` or `armored transport branch` | Yes | Location identifier |
+| `pickup_type` or `service_type` | No | Type of service |
+| `vendor` | No | Vendor name (for filtering) |
+| `amount` | No | Pickup amount |
 
-### Supported Column Names
+### Column Auto-Detection
 
-The parser auto-detects common column naming conventions:
+The system auto-detects common column naming conventions:
+- **Date**: `pickup_date`, `date`, `service_date`, `transaction_date`
+- **Location**: `location`, `armored transport branch`, `branch`, `store`
+- **Service Type**: `pickup_type`, `service_type`, `type`
 
-- **Location ID**: `location_id`, `store_id`, `site_id`, `store #`, `location #`, etc.
-- **Date**: `pickup_date`, `date`, `service_date`, `transaction_date`, etc.
-- **Amount**: `amount`, `expected_amount`, `pickup_amount`, `value`, `total`, etc.
+## Estimation Report Format
 
-### Sample CSV
+```
+=================================================================
+MONTHLY CHARGE ESTIMATION
+=================================================================
+Vendor: Cash Man Services
+Service Month: October 2025
+As of Date: October 23, 2025
+Status: MONTH IN PROGRESS (26% remaining)
 
-```csv
-location_id,location_name,pickup_date,pickup_type,expected_amount,reference_number
-1001,Downtown Store,2024-01-05,Regular Pickup,1500.00,REF-001
-1001,Downtown Store,2024-01-12,Regular Pickup,1750.50,REF-002
-1002,Mall Location,2024-01-03,Regular Pickup,2200.00,REF-003
+-----------------------------------------------------------------
+PICKUP SUMMARY BY LOCATION
+-----------------------------------------------------------------
+Location                              Pickups  Transport  Vault   Subtotal
+Game Haven - Sandy - EOW                  3    $139.71   $27.66   $167.37
+Game Haven - West Jordan - Monthly        1     $46.57    $9.22    $55.79
+Koodegras CBD - Midvale - Monthly         5    $232.85   $46.10   $278.95
+
+-----------------------------------------------------------------
+CHARGE BREAKDOWN
+-----------------------------------------------------------------
+Secure Transportation (Smartsafe)     15 × $46.57      $698.55
+Vault & Cash Management               15 × $9.22       $138.30
+Fuel Surcharge                        14%              $117.16
+                                           ESTIMATED TOTAL: $953.01
+
+-----------------------------------------------------------------
+PROJECTION TO MONTH END
+-----------------------------------------------------------------
+Days elapsed: 23 / 31 (74%)
+Remaining days: 8
+ESTIMATED MONTH-END TOTAL: $1,036.38 - $1,119.75
+=================================================================
 ```
 
-## PDF Invoice Requirements
+## Reconciliation Report Format
 
-The tool parses invoice PDFs by extracting:
-1. Header information (invoice number, date, vendor, total)
-2. Line item tables (location, date, service type, amount)
+```
+=================================================================
+INVOICE RECONCILIATION REPORT
+=================================================================
+Vendor: Cash Man Services
+Invoice #: 16815
+Service Month: October 2025
 
-### Supported Vendors
+-----------------------------------------------------------------
+ESTIMATE vs INVOICE COMPARISON
+-----------------------------------------------------------------
+                                  Estimated    Invoiced    Variance
+-----------------------------------------------------------------
+Smartsafe Pickups (15)             $698.55     $698.55      $0.00 ✓
+Vault & Cash Management (15)       $138.30     $138.30      $0.00 ✓
+Fuel Surcharge                     $117.16     $117.16      $0.00 ✓
+-----------------------------------------------------------------
+TOTALS                             $953.01     $953.01      $0.00 ✓
 
-Auto-detection works for:
-- Loomis
-- Brinks
-- Garda
-- Dunbar
-- Rochester Armored
-
-### Custom Patterns
-
-For non-standard invoice formats, you can customize the PDF parser programmatically:
-
-```python
-from invoice_reconciliation.pdf_parser import PDFInvoiceParser
-
-parser = PDFInvoiceParser(
-    vendor_name="Custom Vendor",
-    custom_patterns={
-        "invoice_number": [r"Inv:\s*(\w+)"],
-        "location_id": [r"Store:\s*(\d+)"],
-    }
-)
-invoice = parser.parse("invoice.pdf")
+RESULT: PERFECT MATCH - No discrepancies found
+=================================================================
 ```
 
-## Reconciliation Logic
+## Fuel Surcharge Calculations
 
-1. **Indexing**: Invoice line items and pickups are indexed by (location_id, month)
-2. **Matching**: For each location-month combination:
-   - Count of invoice items vs pickup records
-   - Total amounts (if available in both)
-3. **Status Assignment**:
-   - `MATCHED`: Counts match, no unmatched items
-   - `INVOICE_OVER`: More invoice items than pickups
-   - `INVOICE_UNDER`: Fewer invoice items than pickups
-   - `MISMATCH`: Other discrepancy
+### Variable Rate (Cash Man Services)
+```
+Rate = (Current Fuel Price - Base Fuel Price) / $0.10 × Rate per 10 cents
+Example: ($3.20 - $2.50) / $0.10 × 0.02 = 14%
+```
 
-## Exit Codes
+### Fixed Rate (Loomis)
+```
+Rate = Fixed percentage (e.g., 10%)
+```
 
-- `0`: All location-months reconciled
-- `1`: Discrepancies found
-- `2`: Parse error (invalid PDF or CSV)
-- `3`: Unexpected error
+## Supported Vendors
+
+| Vendor | Pickup Rate | Fuel Surcharge | Notes |
+|--------|-------------|----------------|-------|
+| Cash Man Services | $46.57 + $9.22 vault | 14% variable | Separate transport & vault |
+| Loomis | $35.00 | 10% fixed | Simple structure |
+| Sectran | $42.00 | None | No fuel surcharge |
+| Brinks | $38.50 | 12% fixed | Also supports smart safe |
+| Garda | $40.00 + $8.50 vault | 8% fixed | Similar to Cash Man |
+
+## Testing
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run specific test file
+pytest tests/test_vendor_reconciliation.py -v
+
+# Run with coverage
+pytest tests/ --cov=invoice_reconciliation
+```
+
+## Project Structure
+
+```
+invoice_reconciliation/
+├── __init__.py           # Package exports
+├── vendors.json          # Vendor pricing configuration
+├── vendor_config.py      # Vendor configuration management
+├── estimation.py         # Monthly estimation engine
+├── vendor_reconciler.py  # Invoice reconciliation with vendor rules
+├── pattern_analysis.py   # Historical pattern detection
+├── streamlit_app.py      # Web dashboard
+├── new_cli.py            # Command line interface
+├── pdf_parser.py         # PDF invoice parsing
+├── csv_parser.py         # CSV tracking data parsing
+└── templates/            # Flask web templates (legacy)
+```
 
 ## Programmatic Usage
 
+### Complete Estimation Workflow
+
 ```python
-from invoice_reconciliation.pdf_parser import parse_invoice_directory
-from invoice_reconciliation.csv_parser import parse_pickup_csv
-from invoice_reconciliation.reconciler import InvoiceReconciler
-from invoice_reconciliation.reports import generate_discrepancy_report
+from invoice_reconciliation import (
+    get_vendor_manager,
+    EstimationEngine,
+    format_estimation_report,
+    export_estimation_to_excel
+)
+import pandas as pd
+from datetime import date
 
-# Parse data
-invoices = parse_invoice_directory("./invoices/")
-pickups = parse_pickup_csv("./pickups.csv")
+# Load vendor
+manager = get_vendor_manager()
+vendor = manager.get_vendor("Cash Man Services")
 
-# Reconcile
-reconciler = InvoiceReconciler()
-summary = reconciler.reconcile(invoices, pickups)
+# Load tracking data
+tracking = pd.read_excel("tracking.xlsx", sheet_name="Pickup Recon")
 
-# Generate report
-print(generate_discrepancy_report(summary))
+# Generate estimation
+engine = EstimationEngine(vendor)
+result = engine.estimate_monthly_charges(
+    tracking,
+    "October 2025",
+    as_of_date=date(2025, 10, 23)
+)
 
-# Access results programmatically
-for result in summary.results:
-    if not result.is_reconciled:
-        print(f"Discrepancy at {result.location_id}/{result.month}")
+# Print report
+print(format_estimation_report(result))
+
+# Export to Excel
+export_estimation_to_excel(result, "october_estimate.xlsx")
+```
+
+### Compare Estimate to Invoice
+
+```python
+from invoice_reconciliation import (
+    VendorReconciler,
+    format_reconciliation_report
+)
+
+reconciler = VendorReconciler(vendor)
+result = reconciler.reconcile(
+    "invoice.pdf",
+    tracking,
+    "October 2025"
+)
+
+print(f"Status: {result.status}")
+print(f"Variance: ${result.variance:,.2f}")
+
+if result.discrepancies:
+    for disc in result.discrepancies:
+        print(f"- {disc.message}: ${disc.impact:,.2f}")
+```
+
+### Analyze Patterns
+
+```python
+from invoice_reconciliation import (
+    analyze_pickup_patterns,
+    format_pattern_report
+)
+
+result = analyze_pickup_patterns(tracking, months_back=6)
+
+print(format_pattern_report(result))
+
+for location, pattern in result.location_patterns.items():
+    print(f"{location}: {pattern.schedule_detected} "
+          f"(avg {pattern.avg_pickups_per_month:.1f}/month)")
 ```
 
 ## License

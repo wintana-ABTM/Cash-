@@ -1,148 +1,68 @@
 """
-Invoice Reconciliation & Estimation Tool
-A standalone tool for estimating and reconciling armored vendor pickup charges.
+Invoice Reconciliation Tool for Armored Transport Vendors
+Supports: Sectran, Loomis, Cashman
 
-Run with: python reconcile_tool.py
+Run with: python -m streamlit run reconcile_tool.py
 """
 
-import json
 import os
 import sys
+import re
+import tempfile
 from datetime import datetime, date
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 import calendar
 
-# Check for required packages
+# Install required packages if missing
 try:
     import pandas as pd
 except ImportError:
-    print("Installing pandas...")
     os.system(f"{sys.executable} -m pip install pandas openpyxl")
     import pandas as pd
 
 try:
-    import streamlit as st
-    HAS_STREAMLIT = True
+    import pdfplumber
 except ImportError:
-    HAS_STREAMLIT = False
+    os.system(f"{sys.executable} -m pip install pdfplumber")
+    import pdfplumber
+
+try:
+    from rapidfuzz import fuzz, process
+except ImportError:
+    os.system(f"{sys.executable} -m pip install rapidfuzz")
+    from rapidfuzz import fuzz, process
+
+try:
+    import streamlit as st
+except ImportError:
+    os.system(f"{sys.executable} -m pip install streamlit")
+    import streamlit as st
+
 
 # ============================================================================
-# VENDOR CONFIGURATION
+# VENDOR RATE CONFIGURATIONS
 # ============================================================================
 
-VENDORS = {
-    "Cash Man Services": {
-        "vendor_id": "cashman",
-        "rates": {
-            "smartsafe_pickup": 46.57,
-            "vault_management": 9.22,
-            "branch_delivery": 25.70,
-            "onetime_pickup": 125.00
-        },
-        "fuel_surcharge": {
-            "enabled": True,
-            "type": "variable",
-            "base_fuel_price": 2.50,
-            "current_fuel_price": 3.20,
-            "rate_per_10_cents": 0.02
-        },
-        "location_mapping": {
-            "Game Haven - Sandy - EOW": ["Game Haven Sandy", "Sandy"],
-            "Game Haven - West Jordan - Monthly": ["Game Haven West Jordan", "West Jordan"],
-            "Game Haven - Bountiful - On Request": ["Game Haven Bountiful", "Bountiful"],
-            "Koodegras CBD - Midvale - Monthly": ["Koodegras Midvale", "Midvale"],
-            "Newgate Mall": ["Newgate"],
-            "Kwick Stop Odgen": ["Kwick Stop", "Ogden"]
-        }
+VENDOR_RATES = {
+    "Sectran": {
+        "base_rate_per_stop": 42.00,  # Update with actual rate
+        "fuel_surcharge_pct": 0.12,
+        "insurance_surcharge_pct": 0.0695,
     },
     "Loomis": {
-        "vendor_id": "loomis",
-        "rates": {
-            "pickup": 35.00,
-            "emergency_pickup": 75.00
-        },
-        "fuel_surcharge": {
-            "enabled": True,
-            "type": "fixed",
-            "rate": 0.10
-        },
-        "location_mapping": {}
+        "base_rate_per_pickup": 35.00,  # Update with actual rate
+        "fuel_fee_pct": 0.125,
+        "insurance_fee_pct": 0.09,
     },
-    "Sectran": {
-        "vendor_id": "sectran",
-        "rates": {
-            "pickup": 42.00
-        },
-        "fuel_surcharge": {
-            "enabled": False
-        },
-        "location_mapping": {}
-    },
-    "Brinks": {
-        "vendor_id": "brinks",
-        "rates": {
-            "pickup": 38.50,
-            "smart_safe": 45.00
-        },
-        "fuel_surcharge": {
-            "enabled": True,
-            "type": "fixed",
-            "rate": 0.12
-        },
-        "location_mapping": {}
-    },
-    "Garda": {
-        "vendor_id": "garda",
-        "rates": {
-            "pickup": 40.00,
-            "vault_processing": 8.50
-        },
-        "fuel_surcharge": {
-            "enabled": True,
-            "type": "fixed",
-            "rate": 0.08
-        },
-        "location_mapping": {}
+    "Cashman": {
+        "smartsafe_pickup_rate": 46.57,
+        "vault_management_rate": 9.22,
+        "branch_delivery_rate": 25.70,
+        "fuel_surcharge_pct": 0.14,  # Variable - update as needed
     }
 }
-
-
-def get_fuel_surcharge_rate(vendor_name: str) -> float:
-    """Calculate the fuel surcharge rate for a vendor."""
-    vendor = VENDORS.get(vendor_name)
-    if not vendor:
-        return 0.0
-
-    fs = vendor.get("fuel_surcharge", {})
-    if not fs.get("enabled"):
-        return 0.0
-
-    if fs.get("type") == "fixed":
-        return fs.get("rate", 0.0)
-    elif fs.get("type") == "variable":
-        base = fs.get("base_fuel_price", 2.50)
-        current = fs.get("current_fuel_price", 3.20)
-        rate_per_10 = fs.get("rate_per_10_cents", 0.02)
-        increments = int((current - base) / 0.10)
-        return increments * rate_per_10
-
-    return 0.0
-
-
-def get_schedule_from_location(location_name: str) -> Optional[str]:
-    """Extract schedule type from location name."""
-    loc_upper = location_name.upper()
-    if "EOW" in loc_upper or "EVERY OTHER WEEK" in loc_upper:
-        return "EOW"
-    elif "WEEKLY" in loc_upper:
-        return "Weekly"
-    elif "MONTHLY" in loc_upper:
-        return "Monthly"
-    elif "ON REQUEST" in loc_upper:
-        return "On Request"
-    return None
 
 
 # ============================================================================
@@ -150,773 +70,1399 @@ def get_schedule_from_location(location_name: str) -> Optional[str]:
 # ============================================================================
 
 @dataclass
-class LocationEstimate:
-    """Estimate for a single location."""
+class TrackingRecord:
+    """A single pickup record from tracking data."""
+    pickup_date: date
+    machine_id: str
+    location_id: str
     location_name: str
-    schedule: Optional[str] = None
-    pickup_count: int = 0
-    transport_charges: float = 0.0
-    vault_charges: float = 0.0
-    subtotal: float = 0.0
+    vendor: str
+    armored_transport_branch: str
+    anticipated_amount: float
+    actual_deposit: float
+    overage_shortage: float
+    status: str
 
 
 @dataclass
-class EstimationResult:
-    """Complete estimation result."""
-    vendor_name: str
-    service_month: str
-    as_of_date: date
-    total_pickups: int = 0
-    base_charges: float = 0.0
-    fuel_surcharge: float = 0.0
-    fuel_surcharge_rate: float = 0.0
-    total_estimated: float = 0.0
-    location_estimates: Dict[str, LocationEstimate] = field(default_factory=dict)
-    charges_by_type: Dict[str, float] = field(default_factory=dict)
+class InvoiceLineItem:
+    """A line item from a vendor invoice."""
+    location_id: Optional[str]
+    location_name: str
+    description: str
+    quantity: int
+    rate: float
+    amount: float
+    period: Optional[str] = None
+
+
+@dataclass
+class ParsedInvoice:
+    """A fully parsed vendor invoice."""
+    vendor: str
+    invoice_number: str
+    invoice_date: Optional[date]
+    service_period: str
+    account_number: Optional[str]
+    line_items: List[InvoiceLineItem]
+    subtotal: float
+    fuel_surcharge: float
+    insurance_surcharge: float
+    total: float
+    raw_text: str
+    stop_count: Optional[int] = None  # For Sectran
+
+
+@dataclass
+class ReconciliationResult:
+    """Result of reconciling one location."""
+    location_id: Optional[str]
+    location_name: str
+    invoice_pickups: int
+    tracking_pickups: int
+    difference: int
+    invoice_amount: float
+    tracking_dates: List[date]
+    status: str  # MATCH, OVER, UNDER, MISSING, EXTRA
+    notes: str = ""
+
+
+@dataclass
+class ReconciliationReport:
+    """Complete reconciliation report."""
+    vendor: str
+    invoice_number: str
+    service_period: str
+    results: List[ReconciliationResult]
+    total_invoice_pickups: int
+    total_tracking_pickups: int
+    total_difference: int
+    invoice_total: float
+    estimated_total: float
+    variance: float
 
 
 # ============================================================================
-# ESTIMATION ENGINE
+# TRACKING DATA LOADER
 # ============================================================================
 
-def detect_columns(df: pd.DataFrame) -> Dict[str, str]:
-    """Auto-detect column names in the dataframe."""
-    columns = {}
+class TrackingDataLoader:
+    """Loads and processes tracking CSV data."""
 
-    # Date column
-    for col in df.columns:
-        col_str = str(col) if col is not None else ""
-        col_lower = col_str.lower().replace("_", " ")
-        if any(x in col_lower for x in ["pickup date", "date", "service date"]):
-            columns["date"] = col
-            break
+    # Column name mappings (lowercase -> standard name)
+    COLUMN_MAPPINGS = {
+        # Date columns
+        "expected pickup date": "pickup_date",
+        "pickup date": "pickup_date",
+        "date": "pickup_date",
+        # Machine ID
+        "machine id": "machine_id",
+        "machineid": "machine_id",
+        "machine": "machine_id",
+        # Location ID
+        "location id": "location_id",
+        "locationid": "location_id",
+        "loc id": "location_id",
+        # Location name
+        "location": "location_name",
+        "location name": "location_name",
+        "store": "location_name",
+        # Vendor (pickup contact)
+        "vendor": "vendor",
+        # Armored transport branch (billing vendor)
+        "armored transport branch": "armored_transport_branch",
+        "transport branch": "armored_transport_branch",
+        "armored branch": "armored_transport_branch",
+        "billing vendor": "armored_transport_branch",
+        # Amounts
+        "anticipated deposit amt": "anticipated_amount",
+        "anticipated deposit": "anticipated_amount",
+        "anticipated amount": "anticipated_amount",
+        "expected amount": "anticipated_amount",
+        "actual deposit": "actual_deposit",
+        "actual": "actual_deposit",
+        "deposit": "actual_deposit",
+        "overage/shortage": "overage_shortage",
+        "overage shortage": "overage_shortage",
+        "variance": "overage_shortage",
+        # Status
+        "status": "status",
+    }
 
-    # Location column
-    for col in df.columns:
-        col_str = str(col) if col is not None else ""
-        col_lower = col_str.lower().replace("_", " ")
-        if any(x in col_lower for x in ["location", "branch", "store", "site"]):
-            columns["location"] = col
-            break
+    def __init__(self):
+        self.data: Optional[pd.DataFrame] = None
+        self.column_map: Dict[str, str] = {}
 
-    # Service type column
-    for col in df.columns:
-        col_str = str(col) if col is not None else ""
-        col_lower = col_str.lower().replace("_", " ")
-        if any(x in col_lower for x in ["type", "service"]):
-            columns["service_type"] = col
-            break
+    def load_csv(self, file_path_or_buffer) -> pd.DataFrame:
+        """Load tracking data from CSV file."""
+        df = pd.read_csv(file_path_or_buffer)
+        return self._process_dataframe(df)
 
-    # Vendor column
-    for col in df.columns:
-        col_str = str(col) if col is not None else ""
-        col_lower = col_str.lower().replace("_", " ")
-        if any(x in col_lower for x in ["vendor", "carrier", "provider"]):
-            columns["vendor"] = col
-            break
+    def load_excel(self, file_path_or_buffer, sheet_name=None) -> pd.DataFrame:
+        """Load tracking data from Excel file."""
+        if sheet_name is None:
+            # Try to find the right sheet
+            excel = pd.ExcelFile(file_path_or_buffer)
+            for s in excel.sheet_names:
+                s_lower = s.lower()
+                if 'pickup' in s_lower or 'recon' in s_lower or 'tracking' in s_lower:
+                    sheet_name = s
+                    break
+            if sheet_name is None:
+                sheet_name = 0
 
-    return columns
+        df = pd.read_excel(file_path_or_buffer, sheet_name=sheet_name)
+        return self._process_dataframe(df)
+
+    def _process_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process and standardize the dataframe."""
+        # Build column mapping
+        self.column_map = {}
+        for col in df.columns:
+            col_lower = str(col).lower().strip()
+            for pattern, standard_name in self.COLUMN_MAPPINGS.items():
+                if pattern in col_lower or col_lower in pattern:
+                    self.column_map[col] = standard_name
+                    break
+
+        # Rename columns
+        df = df.rename(columns=self.column_map)
+
+        # Parse date column
+        if 'pickup_date' in df.columns:
+            df['pickup_date'] = pd.to_datetime(df['pickup_date'], errors='coerce')
+
+        # Parse currency columns
+        for col in ['anticipated_amount', 'actual_deposit', 'overage_shortage']:
+            if col in df.columns:
+                df[col] = df[col].apply(self._parse_currency)
+
+        # Clean string columns
+        for col in ['location_id', 'location_name', 'armored_transport_branch', 'status']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+
+        self.data = df
+        return df
+
+    def _parse_currency(self, value) -> float:
+        """Parse currency string to float."""
+        if pd.isna(value):
+            return 0.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        # Remove $, commas, parentheses (for negatives)
+        value = str(value).replace('$', '').replace(',', '').strip()
+        if value.startswith('(') and value.endswith(')'):
+            value = '-' + value[1:-1]
+        try:
+            return float(value)
+        except:
+            return 0.0
+
+    def get_records_for_vendor_month(
+        self,
+        vendor: str,
+        year: int,
+        month: int
+    ) -> pd.DataFrame:
+        """Get tracking records for a specific vendor and month."""
+        if self.data is None:
+            return pd.DataFrame()
+
+        df = self.data.copy()
+
+        # Filter by vendor (armored transport branch)
+        vendor_lower = vendor.lower()
+        df = df[df['armored_transport_branch'].str.lower().str.contains(vendor_lower, na=False)]
+
+        # Filter by month
+        if 'pickup_date' in df.columns:
+            df = df[
+                (df['pickup_date'].dt.year == year) &
+                (df['pickup_date'].dt.month == month)
+            ]
+
+        return df
+
+    def get_pickups_by_location(
+        self,
+        vendor: str,
+        year: int,
+        month: int
+    ) -> Dict[str, Dict]:
+        """Get pickup counts grouped by location for a vendor/month."""
+        df = self.get_records_for_vendor_month(vendor, year, month)
+
+        result = {}
+        if 'location_id' in df.columns:
+            for loc_id in df['location_id'].unique():
+                loc_df = df[df['location_id'] == loc_id]
+                loc_name = loc_df['location_name'].iloc[0] if 'location_name' in loc_df.columns else loc_id
+
+                result[loc_id] = {
+                    'location_id': loc_id,
+                    'location_name': loc_name,
+                    'pickup_count': len(loc_df),
+                    'total_anticipated': loc_df['anticipated_amount'].sum() if 'anticipated_amount' in loc_df.columns else 0,
+                    'total_actual': loc_df['actual_deposit'].sum() if 'actual_deposit' in loc_df.columns else 0,
+                    'pickup_dates': loc_df['pickup_date'].dt.date.tolist() if 'pickup_date' in loc_df.columns else []
+                }
+        elif 'location_name' in df.columns:
+            for loc_name in df['location_name'].unique():
+                loc_df = df[df['location_name'] == loc_name]
+
+                result[loc_name] = {
+                    'location_id': None,
+                    'location_name': loc_name,
+                    'pickup_count': len(loc_df),
+                    'total_anticipated': loc_df['anticipated_amount'].sum() if 'anticipated_amount' in loc_df.columns else 0,
+                    'total_actual': loc_df['actual_deposit'].sum() if 'actual_deposit' in loc_df.columns else 0,
+                    'pickup_dates': loc_df['pickup_date'].dt.date.tolist() if 'pickup_date' in loc_df.columns else []
+                }
+
+        return result
 
 
-def parse_month_year(month_str: str) -> tuple:
-    """Parse month string into (month, year) tuple."""
-    month_str = month_str.strip()
+# ============================================================================
+# INVOICE PARSERS
+# ============================================================================
 
-    # Try "October 2025" format
-    try:
-        dt = datetime.strptime(month_str, "%B %Y")
-        return dt.month, dt.year
-    except ValueError:
-        pass
+class InvoiceParser:
+    """Base class for invoice parsers."""
 
-    # Try "2025-10" format
-    try:
-        dt = datetime.strptime(month_str, "%Y-%m")
-        return dt.month, dt.year
-    except ValueError:
-        pass
+    def detect_vendor(self, text: str) -> Optional[str]:
+        """Auto-detect vendor from PDF text."""
+        text_upper = text.upper()
 
-    # Try "10/2025" format
-    try:
-        dt = datetime.strptime(month_str, "%m/%Y")
-        return dt.month, dt.year
-    except ValueError:
-        pass
+        if 'SECTRAN' in text_upper:
+            return 'Sectran'
+        elif 'LOOMIS' in text_upper:
+            return 'Loomis'
+        elif 'CASH MAN' in text_upper or 'CASHMAN' in text_upper:
+            return 'Cashman'
 
-    raise ValueError(f"Cannot parse month: {month_str}. Use 'October 2025', '2025-10', or '10/2025'")
+        return None
 
+    def parse_pdf(self, pdf_path: str) -> ParsedInvoice:
+        """Parse a PDF invoice. Auto-detects vendor."""
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = ""
+            all_tables = []
 
-def estimate_monthly_charges(
-    tracking_data: pd.DataFrame,
-    vendor_name: str,
-    month_year: str,
-    as_of_date: date = None
-) -> EstimationResult:
-    """
-    Calculate expected charges for the month based on pickups.
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                full_text += text + "\n"
 
-    Args:
-        tracking_data: DataFrame with pickup records
-        vendor_name: Name of the vendor
-        month_year: Target month (e.g., "October 2025")
-        as_of_date: Calculate as-of specific date (default: today)
+                tables = page.extract_tables()
+                if tables:
+                    all_tables.extend(tables)
 
-    Returns:
-        EstimationResult with complete breakdown
-    """
-    vendor = VENDORS.get(vendor_name)
-    if not vendor:
-        raise ValueError(f"Unknown vendor: {vendor_name}. Available: {list(VENDORS.keys())}")
+        vendor = self.detect_vendor(full_text)
 
-    # Parse month
-    target_month, target_year = parse_month_year(month_year)
+        if vendor == 'Sectran':
+            return self._parse_sectran(full_text, all_tables)
+        elif vendor == 'Loomis':
+            return self._parse_loomis(full_text, all_tables)
+        elif vendor == 'Cashman':
+            return self._parse_cashman(full_text, all_tables)
+        else:
+            # Return generic parsed invoice
+            return self._parse_generic(full_text, all_tables)
 
-    if as_of_date is None:
-        as_of_date = date.today()
+    def _parse_sectran(self, text: str, tables: List) -> ParsedInvoice:
+        """Parse Sectran invoice."""
+        # Extract invoice number
+        inv_match = re.search(r'Invoice\s*No[.:]?\s*(\d+)', text, re.IGNORECASE)
+        invoice_number = inv_match.group(1) if inv_match else "Unknown"
 
-    # Detect columns
-    cols = detect_columns(tracking_data)
-    if "date" not in cols or "location" not in cols:
-        raise ValueError(f"Cannot detect required columns. Found: {list(tracking_data.columns)}")
+        # Extract invoice date
+        date_match = re.search(r'Invoice\s*Date[.:]?\s*(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+        invoice_date = None
+        if date_match:
+            try:
+                invoice_date = datetime.strptime(date_match.group(1), "%m/%d/%Y").date()
+            except:
+                pass
 
-    date_col = cols["date"]
-    location_col = cols["location"]
+        # Extract service period
+        period_match = re.search(r'SERVICE\s+FOR\s+(\w+\s+\d{4})', text, re.IGNORECASE)
+        service_period = period_match.group(1) if period_match else "Unknown"
 
-    # Convert date column
-    df = tracking_data.copy()
-    df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
+        # Extract account number
+        acct_match = re.search(r'Account\s*No[.:]?\s*(\w+)', text, re.IGNORECASE)
+        account_number = acct_match.group(1) if acct_match else None
 
-    # Filter by month
-    month_start = datetime(target_year, target_month, 1)
-    month_end = datetime(target_year, target_month, calendar.monthrange(target_year, target_month)[1])
+        # Count stops from daily activity log
+        # Look for patterns like "1 2 3 4 5..." in stop charges section
+        stop_count = 0
+        stop_matches = re.findall(r'STOP\s+CHARGES.*?(\d+)', text, re.IGNORECASE | re.DOTALL)
+        if stop_matches:
+            stop_count = len(stop_matches)
+        else:
+            # Alternative: count days with activity
+            day_pattern = re.findall(r'\b(\d{1,2})\s+\d+\s+\d+', text)
+            stop_count = len(set(day_pattern))
 
-    mask = (df[date_col] >= month_start) & (df[date_col] <= month_end)
-    filtered_df = df[mask]
+        # Extract line items
+        line_items = []
 
-    # Initialize result
-    result = EstimationResult(
-        vendor_name=vendor_name,
-        service_month=f"{calendar.month_name[target_month]} {target_year}",
-        as_of_date=as_of_date
-    )
+        # Look for armored truck service
+        truck_match = re.search(r'ARMORED\s+TRUCK\s+SVC.*?(\d+)\s+Day.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        if truck_match:
+            qty = int(truck_match.group(1))
+            amount = float(truck_match.group(2).replace(',', ''))
+            line_items.append(InvoiceLineItem(
+                location_id=None,
+                location_name="All Locations",
+                description="Armored Truck Service",
+                quantity=qty,
+                rate=amount / qty if qty > 0 else 0,
+                amount=amount
+            ))
+            stop_count = qty  # Use this as stop count if found
 
-    # Get rates
-    rates = vendor["rates"]
-    pickup_rate = rates.get("smartsafe_pickup", rates.get("pickup", 0))
-    vault_rate = rates.get("vault_management", rates.get("vault_processing", 0))
+        # Extract totals
+        total_match = re.search(r'(?:Invoice\s+)?Total[:\s]*\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        total = float(total_match.group(1).replace(',', '')) if total_match else 0
 
-    # Calculate by location
-    total_pickups = 0
-    total_transport = 0.0
-    total_vault = 0.0
+        # Fuel surcharge
+        fuel_match = re.search(r'Fuel\s+Surcharge.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        fuel_surcharge = float(fuel_match.group(1).replace(',', '')) if fuel_match else 0
 
-    for location in filtered_df[location_col].unique():
-        loc_data = filtered_df[filtered_df[location_col] == location]
-        pickup_count = len(loc_data)
+        # Insurance surcharge
+        ins_match = re.search(r'Insurance\s+Surcharge.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        insurance_surcharge = float(ins_match.group(1).replace(',', '')) if ins_match else 0
 
-        transport = pickup_count * pickup_rate
-        vault = pickup_count * vault_rate
+        subtotal = total - fuel_surcharge - insurance_surcharge
 
-        estimate = LocationEstimate(
-            location_name=location,
-            schedule=get_schedule_from_location(location),
-            pickup_count=pickup_count,
-            transport_charges=transport,
-            vault_charges=vault,
-            subtotal=transport + vault
+        return ParsedInvoice(
+            vendor="Sectran",
+            invoice_number=invoice_number,
+            invoice_date=invoice_date,
+            service_period=service_period,
+            account_number=account_number,
+            line_items=line_items,
+            subtotal=subtotal,
+            fuel_surcharge=fuel_surcharge,
+            insurance_surcharge=insurance_surcharge,
+            total=total,
+            raw_text=text,
+            stop_count=stop_count
         )
 
-        result.location_estimates[location] = estimate
-        total_pickups += pickup_count
-        total_transport += transport
-        total_vault += vault
+    def _parse_loomis(self, text: str, tables: List) -> ParsedInvoice:
+        """Parse Loomis invoice."""
+        # Extract invoice number
+        inv_match = re.search(r'Invoice\s*(?:Number|#|No)?[.:]?\s*(\d+)', text, re.IGNORECASE)
+        invoice_number = inv_match.group(1) if inv_match else "Unknown"
 
-    result.total_pickups = total_pickups
-    result.base_charges = total_transport + total_vault
+        # Extract invoice date
+        date_match = re.search(r'Invoice\s*Date[.:]?\s*(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+        invoice_date = None
+        if date_match:
+            try:
+                invoice_date = datetime.strptime(date_match.group(1), "%m/%d/%Y").date()
+            except:
+                pass
 
-    # Store charges by type
-    result.charges_by_type["Transport/Pickup"] = total_transport
-    if vault_rate > 0:
-        result.charges_by_type["Vault Management"] = total_vault
+        # Extract service period from line items (MM/YY format)
+        period_match = re.search(r'\b(\d{2}/\d{2})\b', text)
+        service_period = period_match.group(1) if period_match else "Unknown"
 
-    # Calculate fuel surcharge
-    fuel_rate = get_fuel_surcharge_rate(vendor_name)
-    result.fuel_surcharge_rate = fuel_rate
-    result.fuel_surcharge = result.base_charges * fuel_rate
+        # Convert MM/YY to readable format
+        if service_period != "Unknown":
+            try:
+                mm, yy = service_period.split('/')
+                month_name = calendar.month_name[int(mm)]
+                year = 2000 + int(yy) if int(yy) < 50 else 1900 + int(yy)
+                service_period = f"{month_name} {year}"
+            except:
+                pass
 
-    result.total_estimated = result.base_charges + result.fuel_surcharge
+        # Parse line items from tables
+        line_items = []
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
 
-    return result
+            for row in table[1:]:  # Skip header
+                if not row or len(row) < 4:
+                    continue
 
+                # Try to extract Location ID and details
+                loc_id = None
+                description = ""
+                amount = 0
 
-def format_estimation_report(result: EstimationResult) -> str:
-    """Format estimation result as a text report."""
-    lines = []
-    sep = "=" * 65
+                for cell in row:
+                    if cell is None:
+                        continue
+                    cell_str = str(cell).strip()
 
-    lines.append(sep)
-    lines.append("MONTHLY CHARGE ESTIMATION")
-    lines.append(sep)
-    lines.append(f"Vendor: {result.vendor_name}")
-    lines.append(f"Service Month: {result.service_month}")
-    lines.append(f"As of Date: {result.as_of_date.strftime('%B %d, %Y')}")
+                    # Location ID pattern (e.g., AR020005, MN020002)
+                    loc_match = re.match(r'^([A-Z]{2}\d{6})$', cell_str)
+                    if loc_match:
+                        loc_id = loc_match.group(1)
+                        continue
 
-    lines.append("")
-    lines.append("-" * 65)
-    lines.append("PICKUP SUMMARY BY LOCATION")
-    lines.append("-" * 65)
-    lines.append(f"{'Location':<40} {'Pickups':>7} {'Subtotal':>12}")
-    lines.append("-" * 65)
+                    # Amount pattern
+                    amt_match = re.match(r'^\$?([\d,]+\.?\d*)$', cell_str.replace(',', ''))
+                    if amt_match and len(cell_str) > 0:
+                        try:
+                            amount = float(cell_str.replace('$', '').replace(',', ''))
+                        except:
+                            pass
+                        continue
 
-    for location, est in result.location_estimates.items():
-        loc_display = location[:38] + ".." if len(location) > 40 else location
-        schedule_str = f" ({est.schedule})" if est.schedule else ""
-        lines.append(f"{loc_display}{schedule_str:<40} {est.pickup_count:>7} ${est.subtotal:>10,.2f}")
+                    # Description
+                    if len(cell_str) > 5 and not cell_str.replace('.', '').isdigit():
+                        description = cell_str
 
-    lines.append("")
-    lines.append("-" * 65)
-    lines.append("CHARGE BREAKDOWN")
-    lines.append("-" * 65)
+                if loc_id or description:
+                    line_items.append(InvoiceLineItem(
+                        location_id=loc_id,
+                        location_name=description,
+                        description=description,
+                        quantity=1,
+                        rate=amount,
+                        amount=amount
+                    ))
 
-    for charge_type, amount in result.charges_by_type.items():
-        lines.append(f"{charge_type:<50} ${amount:>10,.2f}")
+        # Also try text-based extraction for Location IDs
+        loc_pattern = re.findall(r'([A-Z]{2}\d{6})\s+(?:ATM\s+DEPOSIT\s+PULL|.*?)\s+.*?\$?([\d,]+\.?\d*)', text)
+        for loc_id, amount in loc_pattern:
+            # Check if already in line items
+            if not any(li.location_id == loc_id for li in line_items):
+                line_items.append(InvoiceLineItem(
+                    location_id=loc_id,
+                    location_name=f"Location {loc_id}",
+                    description="ATM Deposit Pull",
+                    quantity=1,
+                    rate=float(amount.replace(',', '')) if amount else 0,
+                    amount=float(amount.replace(',', '')) if amount else 0
+                ))
 
-    lines.append(f"{'Subtotal':<50} ${result.base_charges:>10,.2f}")
+        # Extract totals
+        total_match = re.search(r'(?:Invoice\s+)?Total[:\s]*\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        total = float(total_match.group(1).replace(',', '')) if total_match else 0
 
-    if result.fuel_surcharge > 0:
-        lines.append(f"{'Fuel Surcharge':<40} {result.fuel_surcharge_rate*100:.1f}% ${result.fuel_surcharge:>10,.2f}")
+        # Fuel fee
+        fuel_match = re.search(r'FUEL\s+FEE.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        fuel_surcharge = float(fuel_match.group(1).replace(',', '')) if fuel_match else 0
 
-    lines.append("-" * 65)
-    lines.append(f"{'ESTIMATED TOTAL':<50} ${result.total_estimated:>10,.2f}")
-    lines.append(sep)
+        # Insurance fee
+        ins_match = re.search(r'INSURANCE\s+FEE.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        insurance_surcharge = float(ins_match.group(1).replace(',', '')) if ins_match else 0
 
-    return "\n".join(lines)
+        subtotal = total - fuel_surcharge - insurance_surcharge
+
+        return ParsedInvoice(
+            vendor="Loomis",
+            invoice_number=invoice_number,
+            invoice_date=invoice_date,
+            service_period=service_period,
+            account_number=None,
+            line_items=line_items,
+            subtotal=subtotal,
+            fuel_surcharge=fuel_surcharge,
+            insurance_surcharge=insurance_surcharge,
+            total=total,
+            raw_text=text
+        )
+
+    def _parse_cashman(self, text: str, tables: List) -> ParsedInvoice:
+        """Parse Cashman (Cash Man Services) invoice."""
+        # Extract invoice number
+        inv_match = re.search(r'(?:Invoice|INV)[#:\s]*(\d+)', text, re.IGNORECASE)
+        invoice_number = inv_match.group(1) if inv_match else "Unknown"
+
+        # Extract invoice date
+        date_match = re.search(r'Date[.:]?\s*(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+        invoice_date = None
+        if date_match:
+            try:
+                invoice_date = datetime.strptime(date_match.group(1), "%m/%d/%Y").date()
+            except:
+                pass
+
+        # Extract service month
+        period_match = re.search(r'(?:Service\s+Month|For\s+Services?)[:\s]*(\w+\s+\d{4})', text, re.IGNORECASE)
+        service_period = period_match.group(1) if period_match else "Unknown"
+
+        # Parse line items
+        line_items = []
+
+        # Pattern for Smartsafe Pickups: "Secure Transportation: Smartsafe Pickups - [Location] QTY RATE AMOUNT"
+        smartsafe_pattern = re.findall(
+            r'(?:Secure\s+Transportation[:\s]*)?Smartsafe\s+Pickups?\s*[-–]\s*([^0-9]+?)\s+(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)',
+            text, re.IGNORECASE
+        )
+        for match in smartsafe_pattern:
+            loc_name, qty, rate, amount = match
+            line_items.append(InvoiceLineItem(
+                location_id=None,
+                location_name=loc_name.strip(),
+                description="Smartsafe Pickup",
+                quantity=int(qty),
+                rate=float(rate),
+                amount=float(amount.replace(',', ''))
+            ))
+
+        # Pattern for Vault Management
+        vault_pattern = re.findall(
+            r'Vault\s*(?:&|and)?\s*Cash\s+Management\s*[-–]\s*([^0-9]+?)\s+(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)',
+            text, re.IGNORECASE
+        )
+        for match in vault_pattern:
+            loc_name, qty, rate, amount = match
+            line_items.append(InvoiceLineItem(
+                location_id=None,
+                location_name=loc_name.strip(),
+                description="Vault & Cash Management",
+                quantity=int(qty),
+                rate=float(rate),
+                amount=float(amount.replace(',', ''))
+            ))
+
+        # Also try parsing from tables
+        for table in tables:
+            if not table or len(table) < 2:
+                continue
+
+            for row in table:
+                if not row or len(row) < 3:
+                    continue
+
+                row_text = ' '.join(str(c) for c in row if c)
+
+                # Look for QTY RATE AMOUNT pattern
+                qty_match = re.search(r'(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)', row_text)
+                if qty_match:
+                    # Extract location from beginning of row
+                    loc_match = re.match(r'^(.+?)(?=\d)', row_text)
+                    loc_name = loc_match.group(1).strip() if loc_match else "Unknown"
+
+                    qty = int(qty_match.group(1))
+                    rate = float(qty_match.group(2))
+                    amount = float(qty_match.group(3).replace(',', ''))
+
+                    # Determine service type
+                    if 'smartsafe' in row_text.lower() or 'pickup' in row_text.lower():
+                        desc = "Smartsafe Pickup"
+                    elif 'vault' in row_text.lower():
+                        desc = "Vault & Cash Management"
+                    elif 'delivery' in row_text.lower():
+                        desc = "Branch Delivery"
+                    else:
+                        desc = "Service"
+
+                    # Avoid duplicates
+                    if not any(li.location_name == loc_name and li.description == desc for li in line_items):
+                        line_items.append(InvoiceLineItem(
+                            location_id=None,
+                            location_name=loc_name,
+                            description=desc,
+                            quantity=qty,
+                            rate=rate,
+                            amount=amount
+                        ))
+
+        # Extract totals
+        total_match = re.search(r'(?:Invoice\s+)?Total[:\s]*\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        total = float(total_match.group(1).replace(',', '')) if total_match else 0
+
+        # Fuel surcharge
+        fuel_match = re.search(r'Fuel\s+Surcharge.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        fuel_surcharge = float(fuel_match.group(1).replace(',', '')) if fuel_match else 0
+
+        subtotal = sum(li.amount for li in line_items)
+
+        return ParsedInvoice(
+            vendor="Cashman",
+            invoice_number=invoice_number,
+            invoice_date=invoice_date,
+            service_period=service_period,
+            account_number=None,
+            line_items=line_items,
+            subtotal=subtotal,
+            fuel_surcharge=fuel_surcharge,
+            insurance_surcharge=0,
+            total=total if total > 0 else subtotal + fuel_surcharge,
+            raw_text=text
+        )
+
+    def _parse_generic(self, text: str, tables: List) -> ParsedInvoice:
+        """Parse unknown invoice format."""
+        # Extract any invoice number
+        inv_match = re.search(r'(?:Invoice|INV)[#:\s]*(\d+)', text, re.IGNORECASE)
+        invoice_number = inv_match.group(1) if inv_match else "Unknown"
+
+        # Extract any total
+        total_match = re.search(r'(?:Total|Amount\s+Due)[:\s]*\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        total = float(total_match.group(1).replace(',', '')) if total_match else 0
+
+        return ParsedInvoice(
+            vendor="Unknown",
+            invoice_number=invoice_number,
+            invoice_date=None,
+            service_period="Unknown",
+            account_number=None,
+            line_items=[],
+            subtotal=total,
+            fuel_surcharge=0,
+            insurance_surcharge=0,
+            total=total,
+            raw_text=text
+        )
 
 
 # ============================================================================
-# STREAMLIT WEB APP
+# RECONCILIATION ENGINE
 # ============================================================================
 
-def run_streamlit_app():
-    """Run the Streamlit web application."""
-    if not HAS_STREAMLIT:
-        print("Streamlit not installed. Installing...")
-        os.system(f"{sys.executable} -m pip install streamlit")
-        print("Please run this script again.")
-        return
+class ReconciliationEngine:
+    """Matches invoice data against tracking data."""
 
+    def __init__(self, tracking_loader: TrackingDataLoader):
+        self.tracking = tracking_loader
+
+    def reconcile(
+        self,
+        invoice: ParsedInvoice,
+        year: int,
+        month: int
+    ) -> ReconciliationReport:
+        """Reconcile an invoice against tracking data."""
+        # Get tracking data for this vendor/month
+        tracking_by_location = self.tracking.get_pickups_by_location(
+            invoice.vendor, year, month
+        )
+
+        results = []
+
+        if invoice.vendor == "Sectran":
+            # Sectran: Compare total stop count
+            results = self._reconcile_sectran(invoice, tracking_by_location)
+
+        elif invoice.vendor == "Loomis":
+            # Loomis: Match by Location ID
+            results = self._reconcile_loomis(invoice, tracking_by_location)
+
+        elif invoice.vendor == "Cashman":
+            # Cashman: Match by location name (fuzzy)
+            results = self._reconcile_cashman(invoice, tracking_by_location)
+
+        else:
+            # Generic reconciliation
+            results = self._reconcile_generic(invoice, tracking_by_location)
+
+        # Calculate totals
+        total_invoice_pickups = sum(r.invoice_pickups for r in results)
+        total_tracking_pickups = sum(r.tracking_pickups for r in results)
+        total_difference = total_invoice_pickups - total_tracking_pickups
+
+        # Estimate what the invoice should be
+        estimated_total = self._estimate_invoice_amount(
+            invoice.vendor, total_tracking_pickups
+        )
+
+        return ReconciliationReport(
+            vendor=invoice.vendor,
+            invoice_number=invoice.invoice_number,
+            service_period=invoice.service_period,
+            results=results,
+            total_invoice_pickups=total_invoice_pickups,
+            total_tracking_pickups=total_tracking_pickups,
+            total_difference=total_difference,
+            invoice_total=invoice.total,
+            estimated_total=estimated_total,
+            variance=invoice.total - estimated_total
+        )
+
+    def _reconcile_sectran(
+        self,
+        invoice: ParsedInvoice,
+        tracking_by_location: Dict
+    ) -> List[ReconciliationResult]:
+        """Reconcile Sectran invoice (total stops)."""
+        total_tracking = sum(loc['pickup_count'] for loc in tracking_by_location.values())
+        invoice_stops = invoice.stop_count or 0
+
+        # For Sectran, we compare total stops
+        all_dates = []
+        for loc in tracking_by_location.values():
+            all_dates.extend(loc.get('pickup_dates', []))
+
+        difference = invoice_stops - total_tracking
+        if difference == 0:
+            status = "MATCH"
+        elif difference > 0:
+            status = "OVER"
+        else:
+            status = "UNDER"
+
+        return [ReconciliationResult(
+            location_id=None,
+            location_name="All Locations (Sectran)",
+            invoice_pickups=invoice_stops,
+            tracking_pickups=total_tracking,
+            difference=difference,
+            invoice_amount=invoice.total,
+            tracking_dates=sorted(all_dates),
+            status=status,
+            notes=f"Sectran invoices by total stop count"
+        )]
+
+    def _reconcile_loomis(
+        self,
+        invoice: ParsedInvoice,
+        tracking_by_location: Dict
+    ) -> List[ReconciliationResult]:
+        """Reconcile Loomis invoice (by Location ID)."""
+        results = []
+
+        # Group invoice items by Location ID
+        invoice_by_loc = defaultdict(int)
+        invoice_amounts = defaultdict(float)
+        for item in invoice.line_items:
+            if item.location_id:
+                invoice_by_loc[item.location_id] += item.quantity
+                invoice_amounts[item.location_id] += item.amount
+
+        # All location IDs from both sources
+        all_loc_ids = set(invoice_by_loc.keys()) | set(tracking_by_location.keys())
+
+        for loc_id in all_loc_ids:
+            invoice_count = invoice_by_loc.get(loc_id, 0)
+            tracking_data = tracking_by_location.get(loc_id, {})
+            tracking_count = tracking_data.get('pickup_count', 0)
+            tracking_dates = tracking_data.get('pickup_dates', [])
+            loc_name = tracking_data.get('location_name', loc_id)
+
+            difference = invoice_count - tracking_count
+
+            if invoice_count == 0 and tracking_count > 0:
+                status = "MISSING"  # In tracking but not invoiced
+                notes = "Pickups in tracking not on invoice"
+            elif invoice_count > 0 and tracking_count == 0:
+                status = "EXTRA"  # Invoiced but not in tracking
+                notes = "Invoiced but no tracking records"
+            elif difference == 0:
+                status = "MATCH"
+                notes = ""
+            elif difference > 0:
+                status = "OVER"
+                notes = f"Invoice has {difference} more than tracking"
+            else:
+                status = "UNDER"
+                notes = f"Invoice has {-difference} fewer than tracking"
+
+            results.append(ReconciliationResult(
+                location_id=loc_id,
+                location_name=loc_name,
+                invoice_pickups=invoice_count,
+                tracking_pickups=tracking_count,
+                difference=difference,
+                invoice_amount=invoice_amounts.get(loc_id, 0),
+                tracking_dates=tracking_dates,
+                status=status,
+                notes=notes
+            ))
+
+        return sorted(results, key=lambda x: x.location_id or "")
+
+    def _reconcile_cashman(
+        self,
+        invoice: ParsedInvoice,
+        tracking_by_location: Dict
+    ) -> List[ReconciliationResult]:
+        """Reconcile Cashman invoice (by location name, fuzzy match)."""
+        results = []
+
+        # Group invoice items by location name
+        invoice_by_loc = defaultdict(int)
+        invoice_amounts = defaultdict(float)
+        for item in invoice.line_items:
+            if item.description == "Smartsafe Pickup":  # Only count pickups
+                invoice_by_loc[item.location_name] += item.quantity
+                invoice_amounts[item.location_name] += item.amount
+
+        # Get tracking location names
+        tracking_names = list(tracking_by_location.keys())
+
+        matched_tracking = set()
+
+        for invoice_loc, invoice_count in invoice_by_loc.items():
+            # Fuzzy match to tracking
+            best_match = None
+            best_score = 0
+
+            for tracking_loc in tracking_names:
+                score = fuzz.ratio(invoice_loc.lower(), tracking_loc.lower())
+                if score > best_score and score > 60:  # Threshold
+                    best_score = score
+                    best_match = tracking_loc
+
+            if best_match:
+                matched_tracking.add(best_match)
+                tracking_data = tracking_by_location[best_match]
+                tracking_count = tracking_data['pickup_count']
+                tracking_dates = tracking_data.get('pickup_dates', [])
+
+                difference = invoice_count - tracking_count
+
+                if difference == 0:
+                    status = "MATCH"
+                    notes = f"Matched to '{best_match}' (score: {best_score}%)"
+                elif difference > 0:
+                    status = "OVER"
+                    notes = f"Invoice has {difference} more. Matched to '{best_match}'"
+                else:
+                    status = "UNDER"
+                    notes = f"Invoice has {-difference} fewer. Matched to '{best_match}'"
+
+                results.append(ReconciliationResult(
+                    location_id=None,
+                    location_name=invoice_loc,
+                    invoice_pickups=invoice_count,
+                    tracking_pickups=tracking_count,
+                    difference=difference,
+                    invoice_amount=invoice_amounts[invoice_loc],
+                    tracking_dates=tracking_dates,
+                    status=status,
+                    notes=notes
+                ))
+            else:
+                # No match found
+                results.append(ReconciliationResult(
+                    location_id=None,
+                    location_name=invoice_loc,
+                    invoice_pickups=invoice_count,
+                    tracking_pickups=0,
+                    difference=invoice_count,
+                    invoice_amount=invoice_amounts[invoice_loc],
+                    tracking_dates=[],
+                    status="EXTRA",
+                    notes="No matching location in tracking data"
+                ))
+
+        # Add unmatched tracking locations
+        for tracking_loc in tracking_names:
+            if tracking_loc not in matched_tracking:
+                tracking_data = tracking_by_location[tracking_loc]
+                results.append(ReconciliationResult(
+                    location_id=None,
+                    location_name=tracking_loc,
+                    invoice_pickups=0,
+                    tracking_pickups=tracking_data['pickup_count'],
+                    difference=-tracking_data['pickup_count'],
+                    invoice_amount=0,
+                    tracking_dates=tracking_data.get('pickup_dates', []),
+                    status="MISSING",
+                    notes="In tracking but not on invoice"
+                ))
+
+        return sorted(results, key=lambda x: x.location_name)
+
+    def _reconcile_generic(
+        self,
+        invoice: ParsedInvoice,
+        tracking_by_location: Dict
+    ) -> List[ReconciliationResult]:
+        """Generic reconciliation."""
+        total_tracking = sum(loc['pickup_count'] for loc in tracking_by_location.values())
+
+        return [ReconciliationResult(
+            location_id=None,
+            location_name="All Locations",
+            invoice_pickups=len(invoice.line_items),
+            tracking_pickups=total_tracking,
+            difference=len(invoice.line_items) - total_tracking,
+            invoice_amount=invoice.total,
+            tracking_dates=[],
+            status="UNKNOWN",
+            notes="Could not auto-detect vendor format"
+        )]
+
+    def _estimate_invoice_amount(self, vendor: str, pickup_count: int) -> float:
+        """Estimate invoice amount based on vendor rates."""
+        rates = VENDOR_RATES.get(vendor, {})
+
+        if vendor == "Sectran":
+            base = pickup_count * rates.get('base_rate_per_stop', 42)
+            fuel = base * rates.get('fuel_surcharge_pct', 0.12)
+            insurance = base * rates.get('insurance_surcharge_pct', 0.0695)
+            return base + fuel + insurance
+
+        elif vendor == "Loomis":
+            base = pickup_count * rates.get('base_rate_per_pickup', 35)
+            fuel = base * rates.get('fuel_fee_pct', 0.125)
+            insurance = base * rates.get('insurance_fee_pct', 0.09)
+            return base + fuel + insurance
+
+        elif vendor == "Cashman":
+            pickup_charge = pickup_count * rates.get('smartsafe_pickup_rate', 46.57)
+            vault_charge = pickup_count * rates.get('vault_management_rate', 9.22)
+            base = pickup_charge + vault_charge
+            fuel = base * rates.get('fuel_surcharge_pct', 0.14)
+            return base + fuel
+
+        return 0
+
+
+# ============================================================================
+# MONTHLY ESTIMATION
+# ============================================================================
+
+class MonthlyEstimator:
+    """Estimates upcoming bills based on tracking data."""
+
+    def __init__(self, tracking_loader: TrackingDataLoader):
+        self.tracking = tracking_loader
+
+    def estimate_month(
+        self,
+        vendor: str,
+        year: int,
+        month: int
+    ) -> Dict:
+        """Estimate charges for a vendor/month."""
+        df = self.tracking.get_records_for_vendor_month(vendor, year, month)
+
+        if df.empty:
+            return {
+                'vendor': vendor,
+                'period': f"{calendar.month_name[month]} {year}",
+                'pickup_count': 0,
+                'locations': [],
+                'estimated_base': 0,
+                'estimated_fuel': 0,
+                'estimated_insurance': 0,
+                'estimated_total': 0
+            }
+
+        pickup_count = len(df)
+        rates = VENDOR_RATES.get(vendor, {})
+
+        # Calculate by location
+        locations = []
+        if 'location_name' in df.columns:
+            for loc_name in df['location_name'].unique():
+                loc_df = df[df['location_name'] == loc_name]
+                locations.append({
+                    'name': loc_name,
+                    'pickups': len(loc_df),
+                    'total_deposit': loc_df['actual_deposit'].sum() if 'actual_deposit' in loc_df.columns else 0
+                })
+
+        # Calculate estimates
+        if vendor == "Sectran":
+            base = pickup_count * rates.get('base_rate_per_stop', 42)
+            fuel = base * rates.get('fuel_surcharge_pct', 0.12)
+            insurance = base * rates.get('insurance_surcharge_pct', 0.0695)
+
+        elif vendor == "Loomis":
+            base = pickup_count * rates.get('base_rate_per_pickup', 35)
+            fuel = base * rates.get('fuel_fee_pct', 0.125)
+            insurance = base * rates.get('insurance_fee_pct', 0.09)
+
+        elif vendor == "Cashman":
+            pickup_charge = pickup_count * rates.get('smartsafe_pickup_rate', 46.57)
+            vault_charge = pickup_count * rates.get('vault_management_rate', 9.22)
+            base = pickup_charge + vault_charge
+            fuel = base * rates.get('fuel_surcharge_pct', 0.14)
+            insurance = 0
+
+        else:
+            base = pickup_count * 40  # Default rate
+            fuel = base * 0.12
+            insurance = base * 0.07
+
+        return {
+            'vendor': vendor,
+            'period': f"{calendar.month_name[month]} {year}",
+            'pickup_count': pickup_count,
+            'locations': sorted(locations, key=lambda x: x['pickups'], reverse=True),
+            'estimated_base': base,
+            'estimated_fuel': fuel,
+            'estimated_insurance': insurance,
+            'estimated_total': base + fuel + insurance
+        }
+
+    def get_historical_summary(self, vendor: str, months: int = 6) -> List[Dict]:
+        """Get historical summary for a vendor."""
+        results = []
+        today = date.today()
+
+        for i in range(months):
+            # Go back i months
+            target_date = today.replace(day=1)
+            for _ in range(i):
+                target_date = (target_date - pd.Timedelta(days=1)).replace(day=1)
+
+            estimate = self.estimate_month(vendor, target_date.year, target_date.month)
+            results.append(estimate)
+
+        return list(reversed(results))
+
+
+# ============================================================================
+# STREAMLIT APP
+# ============================================================================
+
+def run_app():
+    """Run the Streamlit application."""
     st.set_page_config(
         page_title="Invoice Reconciliation Tool",
-        page_icon="💰",
+        page_icon="📊",
         layout="wide"
     )
 
-    st.title("Invoice Reconciliation & Estimation Tool")
+    st.title("📊 Invoice Reconciliation Tool")
+    st.markdown("Reconcile armored transport invoices against pickup tracking data")
 
-    # Sidebar - Vendor Selection
-    st.sidebar.header("Configuration")
-    vendor_name = st.sidebar.selectbox("Select Vendor", list(VENDORS.keys()))
+    # Initialize session state
+    if 'tracking_loader' not in st.session_state:
+        st.session_state.tracking_loader = TrackingDataLoader()
+    if 'tracking_loaded' not in st.session_state:
+        st.session_state.tracking_loaded = False
 
-    vendor = VENDORS[vendor_name]
+    # Sidebar
+    st.sidebar.header("📁 Data Sources")
 
-    # Show vendor info
-    with st.sidebar.expander("Vendor Details"):
-        st.write(f"**Rates:**")
-        for key, rate in vendor["rates"].items():
-            st.write(f"  {key}: ${rate:.2f}")
+    # Tracking data upload
+    st.sidebar.subheader("1. Upload Tracking Data")
+    tracking_file = st.sidebar.file_uploader(
+        "Pickup Tracking CSV/Excel",
+        type=['csv', 'xlsx', 'xls'],
+        help="Upload Cash_Reconcilation_-_Pickup_Recon.csv or similar"
+    )
 
-        fuel_rate = get_fuel_surcharge_rate(vendor_name)
-        if fuel_rate > 0:
-            st.write(f"**Fuel Surcharge:** {fuel_rate*100:.1f}%")
+    if tracking_file:
+        try:
+            if tracking_file.name.endswith('.csv'):
+                df = st.session_state.tracking_loader.load_csv(tracking_file)
+            else:
+                df = st.session_state.tracking_loader.load_excel(tracking_file)
+
+            st.session_state.tracking_loaded = True
+            st.sidebar.success(f"✅ Loaded {len(df)} records")
+
+            # Show column mapping
+            with st.sidebar.expander("Column Mapping"):
+                for orig, mapped in st.session_state.tracking_loader.column_map.items():
+                    st.write(f"{orig} → {mapped}")
+
+        except Exception as e:
+            st.sidebar.error(f"Error loading tracking data: {e}")
 
     # Mode selection
-    mode = st.sidebar.radio("Mode", ["Monthly Estimation", "Invoice Reconciliation", "Compare Vendors"])
+    st.sidebar.markdown("---")
+    mode = st.sidebar.radio(
+        "Mode",
+        ["Invoice Reconciliation", "Monthly Estimation", "Data Explorer"]
+    )
 
     # Main content
     if mode == "Invoice Reconciliation":
-        st.header("Invoice Reconciliation")
-        st.markdown("Upload an invoice PDF to extract and analyze charges.")
-
-        # Month selection
-        col1, col2 = st.columns(2)
-        with col1:
-            month = st.selectbox(
-                "Service Month",
-                range(1, 13),
-                index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
-                format_func=lambda x: datetime(2000, x, 1).strftime("%B"),
-                key="recon_month"
-            )
-        with col2:
-            year = st.selectbox("Year", range(2024, 2027), index=1, key="recon_year")
-
-        service_month = f"{datetime(year, month, 1).strftime('%B')} {year}"
-
-        # PDF Upload
-        st.subheader("Upload Invoice PDF")
-        pdf_file = st.file_uploader(
-            "Upload Invoice PDF",
-            type=["pdf"],
-            help="Upload the vendor invoice PDF file"
-        )
-
-        if pdf_file:
-            st.success(f"Uploaded: {pdf_file.name}")
-
-            # Try to parse the PDF
-            try:
-                import pdfplumber
-            except ImportError:
-                st.warning("Installing pdfplumber...")
-                os.system(f"{sys.executable} -m pip install pdfplumber")
-                import pdfplumber
-
-            # Save uploaded file temporarily
-            import tempfile
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(pdf_file.read())
-                tmp_path = tmp.name
-
-            try:
-                with pdfplumber.open(tmp_path) as pdf:
-                    st.subheader("Invoice Contents")
-
-                    full_text = ""
-                    for i, page in enumerate(pdf.pages):
-                        text = page.extract_text() or ""
-                        full_text += text + "\n"
-
-                        # Show tables if found
-                        tables = page.extract_tables()
-                        if tables:
-                            for j, table in enumerate(tables):
-                                if table and len(table) > 1:
-                                    st.write(f"**Table {j+1} (Page {i+1}):**")
-                                    try:
-                                        table_df = pd.DataFrame(table[1:], columns=table[0] if table[0] else None)
-                                        st.dataframe(table_df, use_container_width=True)
-                                    except:
-                                        st.dataframe(pd.DataFrame(table), use_container_width=True)
-
-                    # Show extracted text
-                    with st.expander("Raw Text from PDF"):
-                        st.text(full_text[:5000] + "..." if len(full_text) > 5000 else full_text)
-
-                    # Extract key info
-                    st.subheader("Extracted Information")
-
-                    # Try to find invoice number
-                    import re
-                    inv_match = re.search(r'(?:Invoice|INV)[#:\s]*(\d+)', full_text, re.IGNORECASE)
-                    if inv_match:
-                        st.write(f"**Invoice Number:** {inv_match.group(1)}")
-
-                    # Try to find total
-                    total_matches = re.findall(r'(?:Total|Amount Due|Grand Total)[:\s]*\$?([\d,]+\.?\d*)', full_text, re.IGNORECASE)
-                    if total_matches:
-                        st.write(f"**Total Amount:** ${total_matches[-1]}")
-
-                    # Try to find dates
-                    date_matches = re.findall(r'\d{1,2}/\d{1,2}/\d{2,4}', full_text)
-                    if date_matches:
-                        st.write(f"**Dates Found:** {', '.join(date_matches[:5])}")
-
-                    # Show pickup tracking upload for comparison
-                    st.subheader("Compare with Tracking Data (Optional)")
-                    tracking_file = st.file_uploader(
-                        "Upload Tracking Excel/CSV",
-                        type=["xlsx", "xls", "csv"],
-                        key="recon_tracking"
-                    )
-
-                    if tracking_file:
-                        try:
-                            if tracking_file.name.endswith('.csv'):
-                                tracking_df = pd.read_csv(tracking_file)
-                            else:
-                                excel = pd.ExcelFile(tracking_file)
-                                sheet_name = None
-                                for s in excel.sheet_names:
-                                    if 'pickup' in s.lower() or 'recon' in s.lower():
-                                        sheet_name = s
-                                        break
-                                tracking_df = pd.read_excel(tracking_file, sheet_name=sheet_name or 0)
-
-                            st.success(f"Loaded {len(tracking_df)} tracking records")
-
-                            if st.button("Compare Invoice to Tracking", type="primary"):
-                                # Generate estimation from tracking
-                                result = estimate_monthly_charges(tracking_df, vendor_name, service_month)
-
-                                st.subheader("Comparison Results")
-
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.write("**From Tracking Data (Expected):**")
-                                    st.metric("Total Pickups", result.total_pickups)
-                                    st.metric("Expected Total", f"${result.total_estimated:,.2f}")
-
-                                with col2:
-                                    st.write("**From Invoice:**")
-                                    if total_matches:
-                                        invoice_total = float(total_matches[-1].replace(",", ""))
-                                        st.metric("Invoice Total", f"${invoice_total:,.2f}")
-                                        variance = invoice_total - result.total_estimated
-                                        st.metric("Variance", f"${variance:,.2f}",
-                                                delta=f"${variance:,.2f}",
-                                                delta_color="inverse" if variance > 0 else "normal")
-                                    else:
-                                        st.write("Could not extract total from invoice")
-
-                                # Show breakdown
-                                st.subheader("Expected Charges by Location")
-                                loc_data = []
-                                for loc, est in result.location_estimates.items():
-                                    loc_data.append({
-                                        "Location": loc,
-                                        "Pickups": est.pickup_count,
-                                        "Subtotal": f"${est.subtotal:,.2f}"
-                                    })
-                                st.dataframe(pd.DataFrame(loc_data), use_container_width=True)
-
-                        except Exception as e:
-                            st.error(f"Error loading tracking file: {str(e)}")
-
-            except Exception as e:
-                st.error(f"Error reading PDF: {str(e)}")
-            finally:
-                # Clean up temp file
-                try:
-                    os.unlink(tmp_path)
-                except:
-                    pass
+        render_reconciliation_mode()
 
     elif mode == "Monthly Estimation":
-        st.header("Monthly Charge Estimation")
+        render_estimation_mode()
 
-        # Month selection
-        col1, col2 = st.columns(2)
-        with col1:
-            month = st.selectbox(
-                "Month",
-                range(1, 13),
-                index=datetime.now().month - 1,
-                format_func=lambda x: datetime(2000, x, 1).strftime("%B")
-            )
-        with col2:
-            year = st.selectbox("Year", range(2024, 2027), index=1)
+    elif mode == "Data Explorer":
+        render_explorer_mode()
 
-        service_month = f"{datetime(year, month, 1).strftime('%B')} {year}"
 
-        # File upload
-        st.subheader("Upload Tracking Data")
-        uploaded_file = st.file_uploader(
-            "Upload Excel or CSV file",
-            type=["xlsx", "xls", "csv"],
-            help="Upload your pickup tracking file"
+def render_reconciliation_mode():
+    """Render invoice reconciliation mode."""
+    st.header("Invoice Reconciliation")
+
+    if not st.session_state.tracking_loaded:
+        st.warning("⚠️ Please upload tracking data first (in sidebar)")
+        return
+
+    # Invoice upload
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        invoice_file = st.file_uploader(
+            "Upload Invoice PDF",
+            type=['pdf'],
+            help="Upload a Sectran, Loomis, or Cashman invoice"
         )
 
-        if uploaded_file:
-            # Load data
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file)
+    with col2:
+        # Month/Year selection
+        st.subheader("Service Period")
+        month = st.selectbox(
+            "Month",
+            range(1, 13),
+            index=datetime.now().month - 2 if datetime.now().month > 1 else 11,
+            format_func=lambda x: calendar.month_name[x]
+        )
+        year = st.selectbox("Year", range(2024, 2027), index=1)
+
+    if invoice_file:
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(invoice_file.read())
+            tmp_path = tmp.name
+
+        try:
+            # Parse invoice
+            parser = InvoiceParser()
+            invoice = parser.parse_pdf(tmp_path)
+
+            st.success(f"✅ Detected Vendor: **{invoice.vendor}**")
+
+            # Show parsed invoice info
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Invoice #", invoice.invoice_number)
+            col2.metric("Service Period", invoice.service_period)
+            col3.metric("Invoice Total", f"${invoice.total:,.2f}")
+
+            # Show line items
+            with st.expander("📋 Invoice Line Items"):
+                if invoice.line_items:
+                    items_data = []
+                    for item in invoice.line_items:
+                        items_data.append({
+                            "Location ID": item.location_id or "-",
+                            "Location": item.location_name,
+                            "Description": item.description,
+                            "Qty": item.quantity,
+                            "Rate": f"${item.rate:.2f}",
+                            "Amount": f"${item.amount:.2f}"
+                        })
+                    st.dataframe(pd.DataFrame(items_data), use_container_width=True)
                 else:
-                    # Try to find pickup sheet
-                    excel = pd.ExcelFile(uploaded_file)
-                    sheet_name = None
-                    for s in excel.sheet_names:
-                        if 'pickup' in s.lower() or 'recon' in s.lower():
-                            sheet_name = s
-                            break
-                    df = pd.read_excel(uploaded_file, sheet_name=sheet_name or 0)
+                    st.info("No line items extracted (may be summary invoice)")
 
-                st.success(f"Loaded {len(df)} records")
+                if invoice.stop_count:
+                    st.write(f"**Total Stops:** {invoice.stop_count}")
 
-                with st.expander("Preview Data"):
-                    st.dataframe(df.head(10))
+            # Show raw text
+            with st.expander("📄 Raw PDF Text"):
+                st.text(invoice.raw_text[:5000] + "..." if len(invoice.raw_text) > 5000 else invoice.raw_text)
 
-                if st.button("Generate Estimation", type="primary"):
-                    try:
-                        result = estimate_monthly_charges(df, vendor_name, service_month)
+            # Run reconciliation
+            st.subheader("🔍 Reconciliation Results")
 
-                        # Display results
-                        st.subheader("Estimation Results")
+            engine = ReconciliationEngine(st.session_state.tracking_loader)
+            report = engine.reconcile(invoice, year, month)
 
-                        # Metrics
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Total Pickups", result.total_pickups)
-                        col2.metric("Base Charges", f"${result.base_charges:,.2f}")
-                        col3.metric("Fuel Surcharge", f"${result.fuel_surcharge:,.2f}")
-                        col4.metric("Total Estimated", f"${result.total_estimated:,.2f}")
+            # Summary metrics
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Invoice Pickups", report.total_invoice_pickups)
+            col2.metric("Tracking Pickups", report.total_tracking_pickups)
 
-                        # Location breakdown
-                        st.subheader("By Location")
-                        loc_data = []
-                        for loc, est in result.location_estimates.items():
-                            loc_data.append({
-                                "Location": loc,
-                                "Schedule": est.schedule or "N/A",
-                                "Pickups": est.pickup_count,
-                                "Transport": f"${est.transport_charges:,.2f}",
-                                "Vault": f"${est.vault_charges:,.2f}",
-                                "Subtotal": f"${est.subtotal:,.2f}"
-                            })
-                        st.dataframe(pd.DataFrame(loc_data), use_container_width=True)
+            diff_color = "normal" if report.total_difference == 0 else "inverse"
+            col3.metric("Difference", report.total_difference,
+                       delta=report.total_difference if report.total_difference != 0 else None,
+                       delta_color=diff_color)
 
-                        # Full report
-                        with st.expander("Full Text Report"):
-                            st.code(format_estimation_report(result))
+            variance_color = "normal" if abs(report.variance) < 10 else "inverse"
+            col4.metric("$ Variance", f"${report.variance:,.2f}",
+                       delta=f"${report.variance:,.2f}" if report.variance != 0 else None,
+                       delta_color=variance_color)
 
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
+            # Results table
+            if report.results:
+                results_data = []
+                for r in report.results:
+                    status_emoji = {
+                        "MATCH": "✅",
+                        "OVER": "⚠️",
+                        "UNDER": "⚠️",
+                        "MISSING": "❌",
+                        "EXTRA": "❓"
+                    }.get(r.status, "❔")
 
-            except Exception as e:
-                st.error(f"Error loading file: {str(e)}")
+                    results_data.append({
+                        "Status": f"{status_emoji} {r.status}",
+                        "Location ID": r.location_id or "-",
+                        "Location": r.location_name,
+                        "Invoice": r.invoice_pickups,
+                        "Tracking": r.tracking_pickups,
+                        "Diff": r.difference,
+                        "Inv Amount": f"${r.invoice_amount:,.2f}",
+                        "Notes": r.notes
+                    })
 
-    elif mode == "Compare Vendors":
-        st.header("Vendor Cost Comparison")
+                results_df = pd.DataFrame(results_data)
+                st.dataframe(results_df, use_container_width=True)
 
-        # Month selection
-        col1, col2 = st.columns(2)
-        with col1:
-            month = st.selectbox(
-                "Month",
-                range(1, 13),
-                index=datetime.now().month - 1,
-                format_func=lambda x: datetime(2000, x, 1).strftime("%B"),
-                key="compare_month"
-            )
-        with col2:
-            year = st.selectbox("Year", range(2024, 2027), index=1, key="compare_year")
+                # Summary
+                matches = sum(1 for r in report.results if r.status == "MATCH")
+                issues = len(report.results) - matches
 
-        service_month = f"{datetime(year, month, 1).strftime('%B')} {year}"
-
-        # Vendor selection
-        selected_vendors = st.multiselect(
-            "Select Vendors to Compare",
-            list(VENDORS.keys()),
-            default=list(VENDORS.keys())[:3]
-        )
-
-        # File upload
-        uploaded_file = st.file_uploader(
-            "Upload Tracking Data",
-            type=["xlsx", "xls", "csv"],
-            key="compare_upload"
-        )
-
-        if uploaded_file and selected_vendors:
-            try:
-                if uploaded_file.name.endswith('.csv'):
-                    df = pd.read_csv(uploaded_file)
+                if issues == 0:
+                    st.success(f"✅ All {matches} locations match!")
                 else:
-                    excel = pd.ExcelFile(uploaded_file)
-                    sheet_name = None
-                    for s in excel.sheet_names:
-                        if 'pickup' in s.lower() or 'recon' in s.lower():
-                            sheet_name = s
-                            break
-                    df = pd.read_excel(uploaded_file, sheet_name=sheet_name or 0)
+                    st.warning(f"⚠️ {issues} location(s) have discrepancies")
 
-                if st.button("Compare Costs", type="primary"):
-                    results = []
-                    for v in selected_vendors:
-                        try:
-                            r = estimate_monthly_charges(df, v, service_month)
-                            results.append({
-                                "Vendor": v,
-                                "Pickups": r.total_pickups,
-                                "Base Charges": r.base_charges,
-                                "Fuel Surcharge": r.fuel_surcharge,
-                                "Total": r.total_estimated
-                            })
-                        except Exception as e:
-                            st.warning(f"Could not calculate for {v}: {e}")
+            # Export
+            st.download_button(
+                "📥 Export Results to CSV",
+                results_df.to_csv(index=False),
+                f"reconciliation_{invoice.vendor}_{invoice.invoice_number}.csv",
+                "text/csv"
+            )
 
-                    if results:
-                        results_df = pd.DataFrame(results)
+        except Exception as e:
+            st.error(f"Error processing invoice: {e}")
+            import traceback
+            st.code(traceback.format_exc())
 
-                        # Find best
-                        min_total = results_df["Total"].min()
-                        results_df["vs Best"] = results_df["Total"] - min_total
-
-                        # Format
-                        for col in ["Base Charges", "Fuel Surcharge", "Total", "vs Best"]:
-                            results_df[col] = results_df[col].apply(lambda x: f"${x:,.2f}")
-
-                        st.dataframe(results_df, use_container_width=True)
-
-                        # Best vendor
-                        best = [r for r in results if r["Total"] == min_total][0]
-                        st.success(f"Best Rate: **{best['Vendor']}** at ${min_total:,.2f}")
-
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-
-
-# ============================================================================
-# COMMAND LINE INTERFACE
-# ============================================================================
-
-def run_cli():
-    """Run the command-line interface."""
-    print("\n" + "=" * 60)
-    print("INVOICE RECONCILIATION & ESTIMATION TOOL")
-    print("=" * 60)
-
-    # Select mode
-    print("\nSelect Mode:")
-    print("1. Monthly Estimation")
-    print("2. Compare Vendors")
-    print("3. Launch Web Dashboard")
-    print("4. Exit")
-
-    choice = input("\nChoice (1-4): ").strip()
-
-    if choice == "1":
-        run_estimation_cli()
-    elif choice == "2":
-        run_comparison_cli()
-    elif choice == "3":
-        print("\nLaunching web dashboard...")
-        print("Open http://localhost:8501 in your browser")
-        os.system(f"{sys.executable} -m streamlit run {__file__}")
-    elif choice == "4":
-        print("Goodbye!")
-        sys.exit(0)
-    else:
-        print("Invalid choice")
-        run_cli()
-
-
-def run_estimation_cli():
-    """Run estimation from CLI."""
-    print("\n" + "-" * 60)
-    print("MONTHLY ESTIMATION")
-    print("-" * 60)
-
-    # Select vendor
-    print("\nAvailable Vendors:")
-    vendors = list(VENDORS.keys())
-    for i, v in enumerate(vendors, 1):
-        fuel = get_fuel_surcharge_rate(v)
-        fuel_str = f" (Fuel: {fuel*100:.1f}%)" if fuel > 0 else ""
-        print(f"  {i}. {v}{fuel_str}")
-
-    vendor_choice = int(input("\nSelect vendor (number): ").strip()) - 1
-    vendor_name = vendors[vendor_choice]
-
-    # Get month
-    month_str = input("Service month (e.g., October 2025): ").strip()
-
-    # Get file path
-    file_path = input("Path to tracking file (Excel/CSV): ").strip()
-
-    # Load data
-    try:
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
-
-        print(f"\nLoaded {len(df)} records")
-
-        # Generate estimation
-        result = estimate_monthly_charges(df, vendor_name, month_str)
-
-        print("\n" + format_estimation_report(result))
-
-    except Exception as e:
-        print(f"\nError: {e}")
-
-    input("\nPress Enter to continue...")
-    run_cli()
-
-
-def run_comparison_cli():
-    """Run vendor comparison from CLI."""
-    print("\n" + "-" * 60)
-    print("VENDOR COMPARISON")
-    print("-" * 60)
-
-    # Get month
-    month_str = input("Service month (e.g., October 2025): ").strip()
-
-    # Get file path
-    file_path = input("Path to tracking file (Excel/CSV): ").strip()
-
-    try:
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
-        else:
-            df = pd.read_excel(file_path)
-
-        print(f"\nLoaded {len(df)} records")
-        print("\nCalculating costs for all vendors...\n")
-
-        print(f"{'Vendor':<25} {'Pickups':>8} {'Base':>12} {'Fuel':>10} {'Total':>12}")
-        print("-" * 70)
-
-        results = []
-        for vendor_name in VENDORS.keys():
+        finally:
+            # Clean up temp file
             try:
-                result = estimate_monthly_charges(df, vendor_name, month_str)
-                results.append((vendor_name, result.total_estimated))
-                print(f"{vendor_name:<25} {result.total_pickups:>8} "
-                      f"${result.base_charges:>10,.2f} ${result.fuel_surcharge:>8,.2f} "
-                      f"${result.total_estimated:>10,.2f}")
-            except Exception as e:
-                print(f"{vendor_name:<25} Error: {e}")
+                os.unlink(tmp_path)
+            except:
+                pass
 
-        if results:
-            results.sort(key=lambda x: x[1])
-            print(f"\nBest Rate: {results[0][0]} at ${results[0][1]:,.2f}")
-            if len(results) > 1:
-                savings = results[-1][1] - results[0][1]
-                print(f"Potential Savings: ${savings:,.2f}/month")
 
-    except Exception as e:
-        print(f"\nError: {e}")
+def render_estimation_mode():
+    """Render monthly estimation mode."""
+    st.header("Monthly Estimation")
 
-    input("\nPress Enter to continue...")
-    run_cli()
+    if not st.session_state.tracking_loaded:
+        st.warning("⚠️ Please upload tracking data first (in sidebar)")
+        return
+
+    # Vendor and period selection
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        vendor = st.selectbox("Vendor", ["Sectran", "Loomis", "Cashman"])
+
+    with col2:
+        month = st.selectbox(
+            "Month",
+            range(1, 13),
+            index=datetime.now().month - 1,
+            format_func=lambda x: calendar.month_name[x],
+            key="est_month"
+        )
+
+    with col3:
+        year = st.selectbox("Year", range(2024, 2027), index=1, key="est_year")
+
+    # Generate estimation
+    estimator = MonthlyEstimator(st.session_state.tracking_loader)
+    estimate = estimator.estimate_month(vendor, year, month)
+
+    # Display results
+    st.subheader(f"Estimate for {estimate['period']}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Pickups", estimate['pickup_count'])
+    col2.metric("Base Charges", f"${estimate['estimated_base']:,.2f}")
+    col3.metric("Fuel + Insurance", f"${estimate['estimated_fuel'] + estimate['estimated_insurance']:,.2f}")
+    col4.metric("Estimated Total", f"${estimate['estimated_total']:,.2f}")
+
+    # Location breakdown
+    if estimate['locations']:
+        st.subheader("By Location")
+        loc_df = pd.DataFrame(estimate['locations'])
+        loc_df.columns = ['Location', 'Pickups', 'Total Deposit']
+        loc_df['Total Deposit'] = loc_df['Total Deposit'].apply(lambda x: f"${x:,.2f}")
+        st.dataframe(loc_df, use_container_width=True)
+
+    # Historical trend
+    st.subheader("Historical Trend (Last 6 Months)")
+    history = estimator.get_historical_summary(vendor, 6)
+
+    if history:
+        trend_data = []
+        for h in history:
+            trend_data.append({
+                'Period': h['period'],
+                'Pickups': h['pickup_count'],
+                'Estimated $': h['estimated_total']
+            })
+
+        trend_df = pd.DataFrame(trend_data)
+        st.dataframe(trend_df, use_container_width=True)
+
+        # Chart
+        if len(trend_df) > 1:
+            st.line_chart(trend_df.set_index('Period')['Estimated $'])
+
+
+def render_explorer_mode():
+    """Render data explorer mode."""
+    st.header("Data Explorer")
+
+    if not st.session_state.tracking_loaded:
+        st.warning("⚠️ Please upload tracking data first (in sidebar)")
+        return
+
+    df = st.session_state.tracking_loader.data
+
+    # Filters
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if 'armored_transport_branch' in df.columns:
+            vendors = ['All'] + sorted(df['armored_transport_branch'].dropna().unique().tolist())
+            selected_vendor = st.selectbox("Filter by Vendor", vendors)
+
+    with col2:
+        if 'pickup_date' in df.columns:
+            months = df['pickup_date'].dt.to_period('M').unique()
+            month_options = ['All'] + sorted([str(m) for m in months], reverse=True)
+            selected_month = st.selectbox("Filter by Month", month_options)
+
+    with col3:
+        if 'location_name' in df.columns:
+            locations = ['All'] + sorted(df['location_name'].dropna().unique().tolist())
+            selected_location = st.selectbox("Filter by Location", locations)
+
+    # Apply filters
+    filtered_df = df.copy()
+
+    if selected_vendor != 'All' and 'armored_transport_branch' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['armored_transport_branch'] == selected_vendor]
+
+    if selected_month != 'All' and 'pickup_date' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['pickup_date'].dt.to_period('M').astype(str) == selected_month]
+
+    if selected_location != 'All' and 'location_name' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['location_name'] == selected_location]
+
+    # Display
+    st.subheader(f"Showing {len(filtered_df)} records")
+    st.dataframe(filtered_df, use_container_width=True)
+
+    # Summary stats
+    if 'armored_transport_branch' in filtered_df.columns:
+        st.subheader("Summary by Vendor")
+        vendor_summary = filtered_df.groupby('armored_transport_branch').size().reset_index(name='Pickups')
+        st.dataframe(vendor_summary, use_container_width=True)
 
 
 # ============================================================================
 # MAIN
 # ============================================================================
 
-# Check if running under Streamlit
 def is_running_in_streamlit():
+    """Check if running in Streamlit context."""
     try:
         from streamlit.runtime.scriptrunner import get_script_run_ctx
         return get_script_run_ctx() is not None
     except:
         return False
 
-# Auto-run Streamlit app if we're in Streamlit context
-if is_running_in_streamlit():
-    run_streamlit_app()
-elif __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "web":
-        run_streamlit_app()
-    elif len(sys.argv) > 1 and sys.argv[1] == "cli":
-        run_cli()
-    else:
-        print("\nInvoice Reconciliation & Estimation Tool")
-        print("-" * 40)
-        print("\nUsage:")
-        print("  python reconcile_tool.py web   - Launch web dashboard")
-        print("  python reconcile_tool.py cli   - Run command-line interface")
-        print("\nOr run with Streamlit directly:")
-        print("  streamlit run reconcile_tool.py")
-        print()
 
-        # Default to CLI
-        choice = input("Launch web dashboard? (y/n): ").strip().lower()
-        if choice == 'y':
-            print("\nLaunching web dashboard...")
-            os.system(f"{sys.executable} -m streamlit run {__file__}")
-        else:
-            run_cli()
+if is_running_in_streamlit():
+    run_app()
+elif __name__ == "__main__":
+    print("\nInvoice Reconciliation Tool")
+    print("=" * 40)
+    print("\nTo run the web interface:")
+    print("  python -m streamlit run reconcile_tool.py")
+    print("\nOr:")
+    print("  streamlit run reconcile_tool.py")

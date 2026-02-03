@@ -725,7 +725,18 @@ def run_comparison_cli():
 # MAIN
 # ============================================================================
 
-if __name__ == "__main__":
+# Check if running under Streamlit
+def is_running_in_streamlit():
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        return get_script_run_ctx() is not None
+    except:
+        return False
+
+# Auto-run Streamlit app if we're in Streamlit context
+if is_running_in_streamlit():
+    run_streamlit_app()
+elif __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "web":
         run_streamlit_app()
     elif len(sys.argv) > 1 and sys.argv[1] == "cli":

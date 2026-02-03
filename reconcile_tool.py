@@ -216,13 +216,18 @@ class TrackingDataLoader:
 
     def _process_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process and standardize the dataframe."""
-        # Build column mapping
+        # Build column mapping - avoid duplicates
         self.column_map = {}
+        used_standard_names = set()
+
         for col in df.columns:
             col_lower = str(col).lower().strip()
             for pattern, standard_name in self.COLUMN_MAPPINGS.items():
                 if pattern in col_lower or col_lower in pattern:
-                    self.column_map[col] = standard_name
+                    # Only map if this standard name hasn't been used yet
+                    if standard_name not in used_standard_names:
+                        self.column_map[col] = standard_name
+                        used_standard_names.add(standard_name)
                     break
 
         # Rename columns

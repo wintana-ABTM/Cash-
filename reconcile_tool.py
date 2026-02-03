@@ -579,11 +579,11 @@ class InvoiceParser:
     def _parse_cashman(self, text: str, tables: List) -> ParsedInvoice:
         """Parse Cashman (Cash Man Services) invoice."""
         # Extract invoice number
-        inv_match = re.search(r'(?:Invoice|INV)[#:\s]*(\d+)', text, re.IGNORECASE)
+        inv_match = re.search(r'INVOICE\s+(\d+)', text, re.IGNORECASE)
         invoice_number = inv_match.group(1) if inv_match else "Unknown"
 
         # Extract invoice date
-        date_match = re.search(r'Date[.:]?\s*(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
+        date_match = re.search(r'DATE\s+(\d{1,2}/\d{1,2}/\d{2,4})', text, re.IGNORECASE)
         invoice_date = None
         if date_match:
             try:
@@ -592,113 +592,80 @@ class InvoiceParser:
                 pass
 
         # Extract service month
-        period_match = re.search(r'(?:Service\s+Month|For\s+Services?)[:\s]*(\w+\s+\d{4})', text, re.IGNORECASE)
+        period_match = re.search(r'SERVICE\s+MONTH.*?(?:LOCATION)?\s*(\w+\s+\d{4})', text, re.IGNORECASE | re.DOTALL)
         service_period = period_match.group(1) if period_match else "Unknown"
 
-        # Parse line items
+        # Parse line items - Cashman format:
+        # "Secure Transportation:Smartsafe Pickups QTY RATE AMOUNT"
+        # "Location Name" (on next line)
         line_items = []
+        stop_count = 0
 
-        # Pattern for Smartsafe Pickups: "Secure Transportation: Smartsafe Pickups - [Location] QTY RATE AMOUNT"
+        # Pattern for Smartsafe Pickups: matches "Secure Transportation:Smartsafe Pickups QTY RATE AMOUNT"
+        # followed by location name on next line
         smartsafe_pattern = re.findall(
-            r'(?:Secure\s+Transportation[:\s]*)?Smartsafe\s+Pickups?\s*[-–]\s*([^0-9]+?)\s+(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)',
+            r'Secure\s+Transportation:Smartsafe\s+Pickups\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s*\n([^\n]+)',
             text, re.IGNORECASE
         )
         for match in smartsafe_pattern:
-            loc_name, qty, rate, amount = match
-            line_items.append(InvoiceLineItem(
-                location_id=None,
-                location_name=loc_name.strip(),
-                description="Smartsafe Pickup",
-                quantity=int(qty),
-                rate=float(rate),
-                amount=float(amount.replace(',', ''))
-            ))
+            qty, rate, amount, loc_name = match
+            qty = int(qty)
+            if qty > 0:  # Only count actual pickups
+                stop_count += qty
+                line_items.append(InvoiceLineItem(
+                    location_id=None,
+                    location_name=loc_name.strip(),
+                    description="Smartsafe Pickup",
+                    quantity=qty,
+                    rate=float(rate),
+                    amount=float(amount)
+                ))
 
-        # Pattern for Vault Management
+        # Pattern for Vault & Cash Management
         vault_pattern = re.findall(
-            r'Vault\s*(?:&|and)?\s*Cash\s+Management\s*[-–]\s*([^0-9]+?)\s+(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)',
+            r'Vault\s*&\s*Cash\s+Managment:Vault\s*&\s*Cash\s+Managment\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s*\n([^\n]+)',
             text, re.IGNORECASE
         )
         for match in vault_pattern:
-            loc_name, qty, rate, amount = match
-            line_items.append(InvoiceLineItem(
-                location_id=None,
-                location_name=loc_name.strip(),
-                description="Vault & Cash Management",
-                quantity=int(qty),
-                rate=float(rate),
-                amount=float(amount.replace(',', ''))
-            ))
+            qty, rate, amount, loc_name = match
+            qty = int(qty)
+            if qty > 0:
+                line_items.append(InvoiceLineItem(
+                    location_id=None,
+                    location_name=loc_name.strip(),
+                    description="Vault & Cash Management",
+                    quantity=qty,
+                    rate=float(rate),
+                    amount=float(amount)
+                ))
 
-        # Also try parsing from tables
-        for table in tables:
-            if not table or len(table) < 2:
-                continue
-
-            for row in table:
-                if not row or len(row) < 3:
-                    continue
-
-                row_text = ' '.join(str(c) for c in row if c)
-
-                # Look for QTY RATE AMOUNT pattern
-                qty_match = re.search(r'(\d+)\s+\$?([\d.]+)\s+\$?([\d,.]+)', row_text)
-                if qty_match:
-                    # Extract location from beginning of row
-                    loc_match = re.match(r'^(.+?)(?=\d)', row_text)
-                    loc_name = loc_match.group(1).strip() if loc_match else "Unknown"
-
-                    qty = int(qty_match.group(1))
-                    rate = float(qty_match.group(2))
-                    amount = float(qty_match.group(3).replace(',', ''))
-
-                    # Determine service type
-                    if 'smartsafe' in row_text.lower() or 'pickup' in row_text.lower():
-                        desc = "Smartsafe Pickup"
-                    elif 'vault' in row_text.lower():
-                        desc = "Vault & Cash Management"
-                    elif 'delivery' in row_text.lower():
-                        desc = "Branch Delivery"
-                    else:
-                        desc = "Service"
-
-                    # Avoid duplicates
-                    if not any(li.location_name == loc_name and li.description == desc for li in line_items):
-                        line_items.append(InvoiceLineItem(
-                            location_id=None,
-                            location_name=loc_name,
-                            description=desc,
-                            quantity=qty,
-                            rate=rate,
-                            amount=amount
-                        ))
+        # Pattern for Branch Deliveries
+        delivery_pattern = re.findall(
+            r'Secure\s+Transportation:Branch\s+Deliveries\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s*\n([^\n]+)',
+            text, re.IGNORECASE
+        )
+        for match in delivery_pattern:
+            qty, rate, amount, loc_name = match
+            qty = int(qty)
+            if qty > 0:
+                line_items.append(InvoiceLineItem(
+                    location_id=None,
+                    location_name=loc_name.strip(),
+                    description="Branch Delivery",
+                    quantity=qty,
+                    rate=float(rate),
+                    amount=float(amount)
+                ))
 
         # Extract totals
-        total_match = re.search(r'(?:Invoice\s+)?Total[:\s]*\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
+        total_match = re.search(r'TOTAL\s+([\d,]+\.?\d*)', text, re.IGNORECASE)
         total = float(total_match.group(1).replace(',', '')) if total_match else 0
 
         # Fuel surcharge
-        fuel_match = re.search(r'Fuel\s+Surcharge.*?\$?([\d,]+\.?\d*)', text, re.IGNORECASE)
-        fuel_surcharge = float(fuel_match.group(1).replace(',', '')) if fuel_match else 0
+        fuel_match = re.search(r'Fuel\s+Surcharge.*?(\d+)\s+([\d.]+)\s+([\d.]+)', text, re.IGNORECASE)
+        fuel_surcharge = float(fuel_match.group(3)) if fuel_match else 0
 
         subtotal = sum(li.amount for li in line_items)
-
-        # Try to extract total pickup/stop count directly from text
-        # Look for patterns like "Total Pickups: 45" or "45 Pickups" or quantities in line items
-        stop_count = 0
-
-        # Sum quantities from pickup-related line items
-        for item in line_items:
-            desc_lower = item.description.lower()
-            if 'pickup' in desc_lower or 'smartsafe' in desc_lower or 'transportation' in desc_lower:
-                stop_count += item.quantity
-
-        # If no line items found, try to extract from text
-        if stop_count == 0:
-            # Pattern: "XX Pickups" or "Pickups: XX" or "Total: XX"
-            pickup_count_match = re.search(r'(?:(\d+)\s+(?:Pickups?|Stops?)|(?:Pickups?|Stops?|Total)[:\s]+(\d+))', text, re.IGNORECASE)
-            if pickup_count_match:
-                stop_count = int(pickup_count_match.group(1) or pickup_count_match.group(2))
 
         return ParsedInvoice(
             vendor="Cashman",

@@ -877,93 +877,41 @@ class ReconciliationEngine:
         invoice: ParsedInvoice,
         tracking_by_location: Dict
     ) -> List[ReconciliationResult]:
-        """Reconcile Cashman invoice (by location name, fuzzy match)."""
-        results = []
-
-        # Group invoice items by location name
-        invoice_by_loc = defaultdict(int)
-        invoice_amounts = defaultdict(float)
+        """Reconcile Cashman invoice (total stop count comparison)."""
+        # Count total pickups from invoice (Smartsafe Pickups only)
+        invoice_pickups = 0
         for item in invoice.line_items:
-            if item.description == "Smartsafe Pickup":  # Only count pickups
-                invoice_by_loc[item.location_name] += item.quantity
-                invoice_amounts[item.location_name] += item.amount
+            if item.description == "Smartsafe Pickup":
+                invoice_pickups += item.quantity
 
-        # Get tracking location names
-        tracking_names = list(tracking_by_location.keys())
+        # Count total pickups from tracking
+        total_tracking = sum(loc['pickup_count'] for loc in tracking_by_location.values())
 
-        matched_tracking = set()
+        # Collect all pickup dates
+        all_dates = []
+        for loc in tracking_by_location.values():
+            all_dates.extend(loc.get('pickup_dates', []))
 
-        for invoice_loc, invoice_count in invoice_by_loc.items():
-            # Fuzzy match to tracking
-            best_match = None
-            best_score = 0
+        difference = invoice_pickups - total_tracking
 
-            for tracking_loc in tracking_names:
-                score = fuzz.ratio(invoice_loc.lower(), tracking_loc.lower())
-                if score > best_score and score > 60:  # Threshold
-                    best_score = score
-                    best_match = tracking_loc
+        if difference == 0:
+            status = "MATCH"
+        elif difference > 0:
+            status = "OVER"
+        else:
+            status = "UNDER"
 
-            if best_match:
-                matched_tracking.add(best_match)
-                tracking_data = tracking_by_location[best_match]
-                tracking_count = tracking_data['pickup_count']
-                tracking_dates = tracking_data.get('pickup_dates', [])
-
-                difference = invoice_count - tracking_count
-
-                if difference == 0:
-                    status = "MATCH"
-                    notes = f"Matched to '{best_match}' (score: {best_score}%)"
-                elif difference > 0:
-                    status = "OVER"
-                    notes = f"Invoice has {difference} more. Matched to '{best_match}'"
-                else:
-                    status = "UNDER"
-                    notes = f"Invoice has {-difference} fewer. Matched to '{best_match}'"
-
-                results.append(ReconciliationResult(
-                    location_id=None,
-                    location_name=invoice_loc,
-                    invoice_pickups=invoice_count,
-                    tracking_pickups=tracking_count,
-                    difference=difference,
-                    invoice_amount=invoice_amounts[invoice_loc],
-                    tracking_dates=tracking_dates,
-                    status=status,
-                    notes=notes
-                ))
-            else:
-                # No match found
-                results.append(ReconciliationResult(
-                    location_id=None,
-                    location_name=invoice_loc,
-                    invoice_pickups=invoice_count,
-                    tracking_pickups=0,
-                    difference=invoice_count,
-                    invoice_amount=invoice_amounts[invoice_loc],
-                    tracking_dates=[],
-                    status="EXTRA",
-                    notes="No matching location in tracking data"
-                ))
-
-        # Add unmatched tracking locations
-        for tracking_loc in tracking_names:
-            if tracking_loc not in matched_tracking:
-                tracking_data = tracking_by_location[tracking_loc]
-                results.append(ReconciliationResult(
-                    location_id=None,
-                    location_name=tracking_loc,
-                    invoice_pickups=0,
-                    tracking_pickups=tracking_data['pickup_count'],
-                    difference=-tracking_data['pickup_count'],
-                    invoice_amount=0,
-                    tracking_dates=tracking_data.get('pickup_dates', []),
-                    status="MISSING",
-                    notes="In tracking but not on invoice"
-                ))
-
-        return sorted(results, key=lambda x: x.location_name)
+        return [ReconciliationResult(
+            location_id=None,
+            location_name="All Locations (Cashman)",
+            invoice_pickups=invoice_pickups,
+            tracking_pickups=total_tracking,
+            difference=difference,
+            invoice_amount=invoice.total,
+            tracking_dates=sorted(all_dates),
+            status=status,
+            notes="Cashman invoices compared by total stop count"
+        )]
 
     def _reconcile_generic(
         self,

@@ -683,6 +683,23 @@ class InvoiceParser:
 
         subtotal = sum(li.amount for li in line_items)
 
+        # Try to extract total pickup/stop count directly from text
+        # Look for patterns like "Total Pickups: 45" or "45 Pickups" or quantities in line items
+        stop_count = 0
+
+        # Sum quantities from pickup-related line items
+        for item in line_items:
+            desc_lower = item.description.lower()
+            if 'pickup' in desc_lower or 'smartsafe' in desc_lower or 'transportation' in desc_lower:
+                stop_count += item.quantity
+
+        # If no line items found, try to extract from text
+        if stop_count == 0:
+            # Pattern: "XX Pickups" or "Pickups: XX" or "Total: XX"
+            pickup_count_match = re.search(r'(?:(\d+)\s+(?:Pickups?|Stops?)|(?:Pickups?|Stops?|Total)[:\s]+(\d+))', text, re.IGNORECASE)
+            if pickup_count_match:
+                stop_count = int(pickup_count_match.group(1) or pickup_count_match.group(2))
+
         return ParsedInvoice(
             vendor="Cashman",
             invoice_number=invoice_number,
@@ -694,7 +711,8 @@ class InvoiceParser:
             fuel_surcharge=fuel_surcharge,
             insurance_surcharge=0,
             total=total if total > 0 else subtotal + fuel_surcharge,
-            raw_text=text
+            raw_text=text,
+            stop_count=stop_count
         )
 
     def _parse_generic(self, text: str, tables: List) -> ParsedInvoice:
@@ -883,11 +901,17 @@ class ReconciliationEngine:
         tracking_by_location: Dict
     ) -> List[ReconciliationResult]:
         """Reconcile Cashman invoice (total stop count comparison)."""
-        # Count total pickups from invoice (Smartsafe Pickups only)
+        # Count total pickups from invoice
+        # Include any line item that looks like a pickup (smartsafe, pickup, transportation)
         invoice_pickups = 0
         for item in invoice.line_items:
-            if item.description == "Smartsafe Pickup":
+            desc_lower = item.description.lower()
+            if 'pickup' in desc_lower or 'smartsafe' in desc_lower or 'transportation' in desc_lower:
                 invoice_pickups += item.quantity
+
+        # If no pickups found from line items, use stop_count if available
+        if invoice_pickups == 0 and invoice.stop_count:
+            invoice_pickups = invoice.stop_count
 
         # Count total pickups from tracking
         total_tracking = sum(loc['pickup_count'] for loc in tracking_by_location.values())
